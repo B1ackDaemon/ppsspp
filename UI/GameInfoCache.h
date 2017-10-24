@@ -21,34 +21,137 @@
 #include <map>
 
 #include "base/mutex.h"
-#include "thread/prioritizedworkqueue.h"
-#include "gfx/texture.h"
+#include "file/file_util.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/Loaders.h"
+#include "UI/TextureUtil.h"
 
+namespace Draw {
+	class DrawContext;
+	class Texture;
+}
+class PrioritizedWorkQueue;
+
+// A GameInfo holds information about a game, and also lets you do things that the VSH
+// does on the PSP, namely checking for and deleting savedata, and similar things.
+// Only cares about games that are installed on the current device.
+
+// A GameInfo object can also represent a piece of savedata.
+
+// Guessed from GameID, not necessarily accurate
+enum GameRegion {
+	GAMEREGION_JAPAN,
+	GAMEREGION_USA,
+	GAMEREGION_EUROPE,
+	GAMEREGION_HONGKONG,
+	GAMEREGION_ASIA,
+	GAMEREGION_OTHER,
+	GAMEREGION_MAX,
+};
+
+enum GameInfoWantFlags {
+	GAMEINFO_WANTBG = 0x01,
+	GAMEINFO_WANTSIZE = 0x02,
+	GAMEINFO_WANTSND = 0x04,
+};
+
+// TODO: Need to use std::atomic<bool> instead.
+class CompletionFlag {
+public:
+	CompletionFlag() : pending(1) {
+	}
+
+	void SetDone() {
+#if defined(_WIN32)
+		_WriteBarrier();
+		pending = 0;
+#else
+		__sync_lock_release(&pending);
+#endif
+	}
+
+	bool IsDone() {
+		const bool done = pending == 0;
+#if defined(_WIN32)
+		_ReadBarrier();
+#else
+		__sync_synchronize();
+#endif
+		return done;
+	}
+
+	CompletionFlag &operator =(const bool &v) {
+		pending = v ? 0 : 1;
+		return *this;
+	}
+
+	operator bool() {
+		return IsDone();
+	}
+
+private:
+	volatile u32 pending;
+
+	DISALLOW_COPY_AND_ASSIGN(CompletionFlag);
+};
 
 class GameInfo {
 public:
-	GameInfo() : fileType(FILETYPE_UNKNOWN), iconTexture(NULL), pic0Texture(NULL), pic1Texture(NULL) {}
+	GameInfo()
+		: disc_total(0), disc_number(0), region(-1), fileType(FILETYPE_UNKNOWN), paramSFOLoaded(false),
+			hasConfig(false), iconTexture(nullptr), pic0Texture(nullptr), pic1Texture(nullptr), wantFlags(0),
+		  lastAccessedTime(0.0), timeIconWasLoaded(0.0), timePic0WasLoaded(0.0), timePic1WasLoaded(0.0),
+		  gameSize(0), saveDataSize(0), installDataSize(0), pending(true), working(false), fileLoader(nullptr) {}
+	~GameInfo();
+
+	bool Delete();  // Better be sure what you're doing when calling this.
+	bool DeleteAllSaveData();
+	bool LoadFromPath(const std::string &gamePath);
+
+	FileLoader *GetFileLoader();
+	void DisposeFileLoader();
+
+	u64 GetGameSizeInBytes();
+	u64 GetSaveDataSizeInBytes();
+	u64 GetInstallDataSizeInBytes();
+
+	void ParseParamSFO();
+
+	std::vector<std::string> GetSaveDataDirectories();
+
+	std::string GetTitle();
+	void SetTitle(const std::string &newTitle);
+
+	bool IsPending();
+	bool IsWorking();
+
 	// Hold this when reading or writing from the GameInfo.
 	// Don't need to hold it when just passing around the pointer,
 	// and obviously also not when creating it and holding the only pointer
 	// to it.
 	recursive_mutex lock;
 
-	std::string title;  // for easy access, also available in paramSFO.
-	EmuFileType fileType;
+	std::string id;
+	std::string id_version;
+	int disc_total;
+	int disc_number;
+	int region;
+	IdentifiedFileType fileType;
 	ParamSFOData paramSFO;
-	
+	bool paramSFOLoaded;
+	bool hasConfig;
+
 	// Pre read the data, create a texture the next time (GL thread..)
 	std::string iconTextureData;
-	Texture *iconTexture;
+	ManagedTexture *iconTexture;
 	std::string pic0TextureData;
-	Texture *pic0Texture;
+	ManagedTexture *pic0Texture;
 	std::string pic1TextureData;
-	Texture *pic1Texture;
+	ManagedTexture *pic1Texture;
 
-	bool wantBG;
+	std::string sndFileData;
+
+	int wantFlags;
 
 	double lastAccessedTime;
 
@@ -57,33 +160,51 @@ public:
 	double timeIconWasLoaded;
 	double timePic0WasLoaded;
 	double timePic1WasLoaded;
+
+	CompletionFlag iconDataLoaded;
+	CompletionFlag pic0DataLoaded;
+	CompletionFlag pic1DataLoaded;
+	CompletionFlag sndDataLoaded;
+
+	u64 gameSize;
+	u64 saveDataSize;
+	u64 installDataSize;
+	bool pending;
+	bool working;
+
+protected:
+	// Note: this can change while loading, use GetTitle().
+	std::string title;
+
+	FileLoader *fileLoader;
+	std::string filePath_;
 };
 
 class GameInfoCache {
 public:
-	GameInfoCache() : gameInfoWQ_(0) {}
+	GameInfoCache();
 	~GameInfoCache();
 
 	// This creates a background worker thread!
-	void Init();
-	void Shutdown();
 	void Clear();
+	void PurgeType(IdentifiedFileType fileType);
 
 	// All data in GameInfo including iconTexture may be zero the first time you call this
 	// but filled in later asynchronously in the background. So keep calling this,
-	// redrawing the UI often. Only set wantBG if you really want it because
-	// it's big. bgTextures may be discarded over time as well.
-	GameInfo *GetInfo(const std::string &gamePath, bool wantBG);
-	void Decimate();  // Deletes old info.
-	void FlushBGs();  // Gets rid of all BG textures.
+	// redrawing the UI often. Only set flags to GAMEINFO_WANTBG or WANTSND if you really want them 
+	// because they're big. bgTextures and sound may be discarded over time as well.
+	GameInfo *GetInfo(Draw::DrawContext *draw, const std::string &gamePath, int wantFlags);
+	void FlushBGs();  // Gets rid of all BG textures. Also gets rid of bg sounds.
 
-	// TODO - save cache between sessions
-	void Save();
-	void Load();
+	PrioritizedWorkQueue *WorkQueue() { return gameInfoWQ_; }
 
-	void Add(const std::string &key, GameInfo *info_);
+	void WaitUntilDone(GameInfo *info);
 
 private:
+	void Init();
+	void Shutdown();
+	void SetupTexture(GameInfo *info, std::string &textureData, Draw::DrawContext *draw, ManagedTexture *&tex, double &loadTime);
+
 	// Maps ISO path to info.
 	std::map<std::string, GameInfo *> info_;
 
@@ -92,4 +213,4 @@ private:
 };
 
 // This one can be global, no good reason not to.
-extern GameInfoCache g_gameInfoCache;
+extern GameInfoCache *g_gameInfoCache;

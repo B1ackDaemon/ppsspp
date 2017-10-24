@@ -15,11 +15,12 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "HLE.h"
+#include "Core/HLE/HLE.h"
+#include "Core/HLE/FunctionWrappers.h"
+#include "Core/HLE/sceOpenPSID.h"
+#include "Core/MemMap.h"
 
-#include "sceOpenPSID.h"
-
-int sceOpenPSIDGetOpenPSID(u32 OpenPSIDPtr)
+static int sceOpenPSIDGetOpenPSID(u32 OpenPSIDPtr)
 {
 	ERROR_LOG(HLE, "UNTESTED sceOpenPSIDGetOpenPSID(%d)", OpenPSIDPtr);
 	u8 dummyOpenPSID[16] = {0x10, 0x02, 0xA3, 0x44, 0x13, 0xF5, 0x93, 0xB0, 0xCC, 0x6E, 0xD1, 0x32, 0x27, 0x85, 0x0F, 0x9D};
@@ -36,7 +37,7 @@ int sceOpenPSIDGetOpenPSID(u32 OpenPSIDPtr)
 
 const HLEFunction sceOpenPSID[] = 
 {
-	{0xc69bebce, WrapI_U<sceOpenPSIDGetOpenPSID>, "sceOpenPSIDGetOpenPSID"},
+	{0XC69BEBCE, &WrapI_U<sceOpenPSIDGetOpenPSID>,   "sceOpenPSIDGetOpenPSID", 'i', "x"},
 };
 
 void Register_sceOpenPSID()

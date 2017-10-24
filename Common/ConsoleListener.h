@@ -15,29 +15,28 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#ifndef _CONSOLELISTENER_H
-#define _CONSOLELISTENER_H
+#pragma once
 
 #include "LogManager.h"
 
 #ifdef _WIN32
-#include <windows.h>
+#include "CommonWindows.h"
 #endif
 
-class ConsoleListener : public LogListener
-{
+class ConsoleListener : public LogListener {
 public:
 	ConsoleListener();
 	~ConsoleListener();
 
-	void Open(bool Hidden = false, int Width = 200, int Height = 100, const char * Name = "DebugConsole (PPSSPP)");
+	void Init(bool AutoOpen = true, int Width = 200, int Height = 100, const char * Name = "DebugConsole (PPSSPP)");
+	void Open();
 	void UpdateHandle();
 	void Close();
 	bool IsOpen();
 	void LetterSpace(int Width, int Height);
 	void BufferWidthHeight(int BufferWidth, int BufferHeight, int ScreenWidth, int ScreenHeight, bool BufferFirst);
 	void PixelSpace(int Left, int Top, int Width, int Height, bool);
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
 	COORD GetCoordinates(int BytesRead, int BufferWidth);
 #endif
 	void Log(LogTypes::LOG_LEVELS, const char *Text);
@@ -46,25 +45,28 @@ public:
 	void Show(bool bShow);
 	bool Hidden() const { return bHidden; }
 private:
-#ifdef _WIN32
-	HWND GetHwnd(void);
+#if defined(USING_WIN_UI)
+	HWND hWnd;
 	HANDLE hConsole;
 
-	static DWORD WINAPI RunThread(LPVOID lpParam);
+	static unsigned int WINAPI RunThread(void *lpParam);
 	void LogWriterThread();
 	void SendToThread(LogTypes::LOG_LEVELS Level, const char *Text);
 	void WriteToConsole(LogTypes::LOG_LEVELS Level, const char *Text, size_t Len);
 
-	HANDLE hThread;
-	HANDLE hTriggerEvent;
-	CRITICAL_SECTION criticalSection;
+	static int refCount;
+	static HANDLE hThread;
+	static HANDLE hTriggerEvent;
+	static CRITICAL_SECTION criticalSection;
 
-	char *logPending;
-	volatile u32 logPendingReadPos;
-	volatile u32 logPendingWritePos;
+	static char *logPending;
+	static volatile u32 logPendingReadPos;
+	static volatile u32 logPendingWritePos;
+
+	int openWidth_;
+	int openHeight_;
+	std::wstring title_;
 #endif
 	bool bHidden;
 	bool bUseColor;
 };
-
-#endif  // _CONSOLELISTENER_H

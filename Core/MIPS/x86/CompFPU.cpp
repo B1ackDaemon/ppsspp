@@ -15,21 +15,28 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "../MIPS.h"
+#include "ppsspp_config.h"
+#if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
 
-#include "../../Config.h"
+#include "Core/Config.h"
+#include "Core/MemMap.h"
 #include "Common/Common.h"
-#include "Jit.h"
-#include "RegCache.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MIPSCodeUtils.h"
+#include "Core/MIPS/x86/Jit.h"
+#include "Core/MIPS/x86/RegCache.h"
 
-#define _RS ((op>>21) & 0x1F)
-#define _RT ((op>>16) & 0x1F)
-#define _RD ((op>>11) & 0x1F)
-#define _FS ((op>>11) & 0x1F)
-#define _FT ((op>>16) & 0x1F)
-#define _FD ((op>>6 ) & 0x1F)
-#define _POS	((op>>6 ) & 0x1F)
-#define _SIZE ((op>>11 ) & 0x1F)
+#define _RS MIPS_GET_RS(op)
+#define _RT MIPS_GET_RT(op)
+#define _RD MIPS_GET_RD(op)
+#define _FS MIPS_GET_FS(op)
+#define _FT MIPS_GET_FT(op)
+#define _FD MIPS_GET_FD(op)
+#define _SA MIPS_GET_SA(op)
+#define _POS  ((op>> 6) & 0x1F)
+#define _SIZE ((op>>11) & 0x1F)
+#define _IMM16 (signed short)(op & 0xFFFF)
+#define _IMM26 (op & 0x03FFFFFF)
 
 // All functions should have CONDITIONAL_DISABLE, so we can narrow things down to a file quickly.
 // Currently known non working ones should have DISABLE.
@@ -38,45 +45,49 @@
 #define CONDITIONAL_DISABLE ;
 #define DISABLE { Comp_Generic(op); return; }
 
-namespace MIPSComp
-{
+namespace MIPSComp {
 
-void Jit::CompFPTriArith(u32 op, void (XEmitter::*arith)(X64Reg reg, OpArg), bool orderMatters)
-{
+using namespace Gen;
+using namespace X64JitConstants;
+
+void Jit::CopyFPReg(X64Reg dst, OpArg src) {
+	if (src.IsSimpleReg()) {
+		MOVAPS(dst, src);
+	} else {
+		MOVSS(dst, src);
+	}
+}
+
+void Jit::CompFPTriArith(MIPSOpcode op, void (XEmitter::*arith)(X64Reg reg, OpArg), bool orderMatters) {
 	int ft = _FT;
 	int fs = _FS;
 	int fd = _FD;
 	fpr.SpillLock(fd, fs, ft);
 
-	if (fs == fd)
-	{
-		fpr.BindToRegister(fd, true, true);
+	if (fs == fd) {
+		fpr.MapReg(fd, true, true);
 		(this->*arith)(fpr.RX(fd), fpr.R(ft));
-	}
-	else if (ft == fd && !orderMatters)
-	{
-		fpr.BindToRegister(fd, true, true);
+	} else if (ft == fd && !orderMatters) {
+		fpr.MapReg(fd, true, true);
 		(this->*arith)(fpr.RX(fd), fpr.R(fs));
-	}
-	else if (ft != fd && fs != fd && ft != fs) {
-		fpr.BindToRegister(fd, false, true);
-		MOVSS(fpr.RX(fd), fpr.R(fs));
+	} else if (ft != fd) {
+		// fs can't be fd (handled above.)
+		fpr.MapReg(fd, false, true);
+		CopyFPReg(fpr.RX(fd), fpr.R(fs));
 		(this->*arith)(fpr.RX(fd), fpr.R(ft));
-	}
-	else {
-		fpr.BindToRegister(fd, true, true);
-		MOVSS(XMM0, fpr.R(fs));
+	} else {
+		// fd must be ft, and order must matter.
+		fpr.MapReg(fd, true, true);
+		CopyFPReg(XMM0, fpr.R(fs));
 		(this->*arith)(XMM0, fpr.R(ft));
-		MOVSS(fpr.RX(fd), R(XMM0));
+		MOVAPS(fpr.RX(fd), R(XMM0));
 	}
 	fpr.ReleaseSpillLocks();
 }
 
-void Jit::Comp_FPU3op(u32 op)
-{ 
+void Jit::Comp_FPU3op(MIPSOpcode op) {
 	CONDITIONAL_DISABLE;
-	switch (op & 0x3f) 
-	{
+	switch (op & 0x3f) {
 	case 0: CompFPTriArith(op, &XEmitter::ADDSS, false); break; //F(fd) = F(fs) + F(ft); //add
 	case 1: CompFPTriArith(op, &XEmitter::SUBSS, true); break;  //F(fd) = F(fs) - F(ft); //sub
 	case 2: CompFPTriArith(op, &XEmitter::MULSS, false); break; //F(fd) = F(fs) * F(ft); //mul
@@ -87,32 +98,27 @@ void Jit::Comp_FPU3op(u32 op)
 	}
 }
 
-static u32 GC_ALIGNED16(ssLoadStoreTemp);
+static u32 MEMORY_ALIGNED16(ssLoadStoreTemp);
 
-void Jit::Comp_FPULS(u32 op)
-{
+void Jit::Comp_FPULS(MIPSOpcode op) {
 	CONDITIONAL_DISABLE;
-	s32 offset = (s16)(op&0xFFFF);
+	s32 offset = _IMM16;
 	int ft = _FT;
-	int rs = _RS;
+	MIPSGPReg rs = _RS;
 
-	switch(op >> 26)
-	{
+	switch (op >> 26) {
 	case 49: //FI(ft) = Memory::Read_U32(addr); break; //lwc1
 		{
 			gpr.Lock(rs);
 			fpr.SpillLock(ft);
-			fpr.BindToRegister(ft, false, true);
+			fpr.MapReg(ft, false, true);
 
 			JitSafeMem safe(this, rs, offset);
 			OpArg src;
 			if (safe.PrepareRead(src, 4))
 				MOVSS(fpr.RX(ft), src);
-			if (safe.PrepareSlowRead((void *) &Memory::Read_U32))
-			{
-				MOV(32, M((void *)&ssLoadStoreTemp), R(EAX));
-				MOVSS(fpr.RX(ft), M((void *)&ssLoadStoreTemp));
-			}
+			if (safe.PrepareSlowRead(safeMemFuncs.readU32))
+				MOVD_xmm(fpr.RX(ft), R(EAX));
 			safe.Finish();
 
 			gpr.UnlockAll();
@@ -123,7 +129,7 @@ void Jit::Comp_FPULS(u32 op)
 		{
 			gpr.Lock(rs);
 			fpr.SpillLock(ft);
-			fpr.BindToRegister(ft, true, false);
+			fpr.MapReg(ft, true, false);
 
 			JitSafeMem safe(this, rs, offset);
 			OpArg dest;
@@ -131,8 +137,8 @@ void Jit::Comp_FPULS(u32 op)
 				MOVSS(dest, fpr.RX(ft));
 			if (safe.PrepareSlowWrite())
 			{
-				MOVSS(M((void *)&ssLoadStoreTemp), fpr.RX(ft));
-				safe.DoSlowWrite((void *) &Memory::Write_U32, M((void *)&ssLoadStoreTemp));
+				MOVSS(M(&ssLoadStoreTemp), fpr.RX(ft));
+				safe.DoSlowWrite(safeMemFuncs.writeU32, M(&ssLoadStoreTemp));
 			}
 			safe.Finish();
 
@@ -147,89 +153,74 @@ void Jit::Comp_FPULS(u32 op)
 	}
 }
 
-static const u64 GC_ALIGNED16(ssOneBits[2])	= {0x0000000100000001ULL, 0x0000000100000001ULL};
-static const u64 GC_ALIGNED16(ssSignBits2[2])	= {0x8000000080000000ULL, 0x8000000080000000ULL};
-static const u64 GC_ALIGNED16(ssNoSignMask[2]) = {0x7FFFFFFF7FFFFFFFULL, 0x7FFFFFFF7FFFFFFFULL};
+static const u64 MEMORY_ALIGNED16(ssOneBits[2])	= {0x0000000100000001ULL, 0x0000000100000001ULL};
+static const u64 MEMORY_ALIGNED16(ssSignBits2[2])	= {0x8000000080000000ULL, 0x8000000080000000ULL};
+static const u64 MEMORY_ALIGNED16(ssNoSignMask[2]) = {0x7FFFFFFF7FFFFFFFULL, 0x7FFFFFFF7FFFFFFFULL};
 
-static u32 ssCompareTemp;
-
-enum
-{
-	CMPEQSS = 0,
-	CMPLTSS = 1,
-	CMPLESS = 2,
-	CMPUNORDSS = 3,
-	CMPNEQSS = 4,
-	CMPNLTSS = 5,
-	CMPNLESS = 6,
-	CMPORDSS = 7,
-};
-
-void Jit::CompFPComp(int lhs, int rhs, u8 compare, bool allowNaN)
-{
-	MOVSS(XMM0, fpr.R(lhs));
-	CMPSS(XMM0, fpr.R(rhs), compare);
-	MOVSS(M((void *) &currentMIPS->fpcond), XMM0);
+void Jit::CompFPComp(int lhs, int rhs, u8 compare, bool allowNaN) {
+	gpr.MapReg(MIPS_REG_FPCOND, false, true);
 
 	// This means that NaN also means true, e.g. !<> or !>, etc.
-	if (allowNaN)
-	{
-		MOVSS(XMM0, fpr.R(lhs));
-		CMPSS(XMM0, fpr.R(rhs), CMPUNORDSS);
-		MOVSS(M((void *) &ssCompareTemp), XMM0);
+	if (allowNaN) {
+		CopyFPReg(XMM0, fpr.R(lhs));
+		CopyFPReg(XMM1, fpr.R(lhs));
+		CMPSS(XMM0, fpr.R(rhs), compare);
+		CMPUNORDSS(XMM1, fpr.R(rhs));
 
-		MOV(32, R(EAX), M((void *) &ssCompareTemp));
-		OR(32, M((void *) &currentMIPS->fpcond), R(EAX));
+		POR(XMM0, R(XMM1));
+	} else {
+		CopyFPReg(XMM0, fpr.R(lhs));
+		CMPSS(XMM0, fpr.R(rhs), compare);
 	}
+
+	MOVD_xmm(gpr.R(MIPS_REG_FPCOND), XMM0);
 }
 
-void Jit::Comp_FPUComp(u32 op)
-{
+void Jit::Comp_FPUComp(MIPSOpcode op) {
 	CONDITIONAL_DISABLE;
 
 	int fs = _FS;
 	int ft = _FT;
 
-	switch (op & 0xf)
-	{
+	switch (op & 0xf) {
 	case 0: //f
 	case 8: //sf
-		MOV(32, M((void *) &currentMIPS->fpcond), Imm32(0));
+		gpr.SetImm(MIPS_REG_FPCOND, 0);
 		break;
 
 	case 1: //un
 	case 9: //ngle
-		CompFPComp(fs, ft, CMPUNORDSS);
+		CompFPComp(fs, ft, CMP_UNORD);
 		break;
 
 	case 2: //eq
 	case 10: //seq
-		CompFPComp(fs, ft, CMPEQSS);
+		CompFPComp(fs, ft, CMP_EQ);
 		break;
 
 	case 3: //ueq
 	case 11: //ngl
-		CompFPComp(fs, ft, CMPEQSS, true);
+		CompFPComp(fs, ft, CMP_EQ, true);
 		break;
 
 	case 4: //olt
 	case 12: //lt
-		CompFPComp(fs, ft, CMPLTSS);
+		CompFPComp(fs, ft, CMP_LT);
 		break;
 
 	case 5: //ult
 	case 13: //nge
-		CompFPComp(ft, fs, CMPNLESS);
+		CompFPComp(ft, fs, CMP_NLE);
 		break;
 
 	case 6: //ole
 	case 14: //le
-		CompFPComp(fs, ft, CMPLESS);
+		CompFPComp(fs, ft, CMP_LE);
 		break;
 
 	case 7: //ule
 	case 15: //ngt
-		CompFPComp(ft, fs, CMPNLTSS);
+		CompFPComp(ft, fs, CMP_NLT);
 		break;
 
 	default:
@@ -237,109 +228,231 @@ void Jit::Comp_FPUComp(u32 op)
 	}
 }
 
-void Jit::Comp_FPU2op(u32 op) {
+static u32 mxcsrTemp;
+
+void Jit::Comp_FPU2op(MIPSOpcode op) {
 	CONDITIONAL_DISABLE;
 	
 	int fs = _FS;
 	int fd = _FD;
 
-	switch (op & 0x3f) 
-	{
+	auto execRounding = [&](void (XEmitter::*conv)(X64Reg, OpArg), int setMXCSR) {
+		fpr.SpillLock(fd, fs);
+		fpr.MapReg(fd, fs == fd, true);
+
+		// Small optimization: 0 is our default mode anyway.
+		if (setMXCSR == 0 && !js.hasSetRounding) {
+			setMXCSR = -1;
+		}
+		if (setMXCSR != -1) {
+			STMXCSR(M(&mxcsrTemp));
+			MOV(32, R(TEMPREG), M(&mxcsrTemp));
+			AND(32, R(TEMPREG), Imm32(~(3 << 13)));
+			OR(32, R(TEMPREG), Imm32(setMXCSR << 13));
+			MOV(32, M(&mips_->temp), R(TEMPREG));
+			LDMXCSR(M(&mips_->temp));
+		}
+
+		(this->*conv)(TEMPREG, fpr.R(fs));
+
+		// Did we get an indefinite integer value?
+		CMP(32, R(TEMPREG), Imm32(0x80000000));
+		FixupBranch skip = J_CC(CC_NE);
+		if (fd != fs) {
+			CopyFPReg(fpr.RX(fd), fpr.R(fs));
+		}
+		XORPS(XMM1, R(XMM1));
+		CMPSS(fpr.RX(fd), R(XMM1), CMP_LT);
+
+		// At this point, -inf = 0xffffffff, inf/nan = 0x00000000.
+		// We want -inf to be 0x80000000 inf/nan to be 0x7fffffff, so we flip those bits.
+		MOVD_xmm(R(TEMPREG), fpr.RX(fd));
+		XOR(32, R(TEMPREG), Imm32(0x7fffffff));
+
+		SetJumpTarget(skip);
+		MOVD_xmm(fpr.RX(fd), R(TEMPREG));
+
+		if (setMXCSR != -1) {
+			LDMXCSR(M(&mxcsrTemp));
+		}
+	};
+
+	switch (op & 0x3f) {
 	case 5:	//F(fd)	= fabsf(F(fs)); break; //abs
 		fpr.SpillLock(fd, fs);
-		fpr.BindToRegister(fd, fd == fs, true);
-		MOVSS(fpr.RX(fd), fpr.R(fs));
-		PAND(fpr.RX(fd), M((void *)ssNoSignMask));
-		fpr.ReleaseSpillLocks();
+		fpr.MapReg(fd, fd == fs, true);
+		if (fd != fs && fpr.IsMapped(fs)) {
+			MOVAPS(fpr.RX(fd), M(ssNoSignMask));
+			ANDPS(fpr.RX(fd), fpr.R(fs));
+		} else {
+			if (fd != fs) {
+				MOVSS(fpr.RX(fd), fpr.R(fs));
+			}
+			ANDPS(fpr.RX(fd), M(ssNoSignMask));
+		}
 		break;
 
 	case 6:	//F(fd)	= F(fs);				break; //mov
 		if (fd != fs) {
 			fpr.SpillLock(fd, fs);
-			fpr.BindToRegister(fd, fd == fs, true);
-			MOVSS(fpr.RX(fd), fpr.R(fs));
-			fpr.ReleaseSpillLocks();
+			fpr.MapReg(fd, fd == fs, true);
+			CopyFPReg(fpr.RX(fd), fpr.R(fs));
 		}
 		break;
 
 	case 7:	//F(fd)	= -F(fs);			 break; //neg
 		fpr.SpillLock(fd, fs);
-		fpr.BindToRegister(fd, fd == fs, true);
-		MOVSS(fpr.RX(fd), fpr.R(fs));
-		PXOR(fpr.RX(fd), M((void *)ssSignBits2));
-		fpr.ReleaseSpillLocks();
+		fpr.MapReg(fd, fd == fs, true);
+		if (fd != fs && fpr.IsMapped(fs)) {
+			MOVAPS(fpr.RX(fd), M(ssSignBits2));
+			XORPS(fpr.RX(fd), fpr.R(fs));
+		} else {
+			if (fd != fs) {
+				MOVSS(fpr.RX(fd), fpr.R(fs));
+			}
+			XORPS(fpr.RX(fd), M(ssSignBits2));
+		}
 		break;
 
 
 	case 4:	//F(fd)	= sqrtf(F(fs)); break; //sqrt
-		fpr.SpillLock(fd, fs); // this probably works, just badly tested
-		fpr.BindToRegister(fd, fd == fs, true);
+		fpr.SpillLock(fd, fs);
+		fpr.MapReg(fd, fd == fs, true);
 		SQRTSS(fpr.RX(fd), fpr.R(fs));
-		fpr.ReleaseSpillLocks();
-		return;
+		break;
 
 	case 13: //FsI(fd) = F(fs)>=0 ? (int)floorf(F(fs)) : (int)ceilf(F(fs)); break;//trunc.w.s
-		fpr.SpillLock(fs, fd);
-		fpr.StoreFromRegister(fd);
-		CVTTSS2SI(EAX, fpr.R(fs));
-		MOV(32, fpr.R(fd), R(EAX));
-		fpr.ReleaseSpillLocks();
+		execRounding(&XEmitter::CVTTSS2SI, -1);
 		break;
 
 	case 32: //F(fd)	= (float)FsI(fs);			break; //cvt.s.w
-		fpr.StoreFromRegister(fs);
-		CVTSI2SS(XMM0, fpr.R(fs));
-		MOVSS(fpr.R(fd), XMM0);
+		fpr.SpillLock(fd, fs);
+		fpr.MapReg(fd, fs == fd, true);
+		if (fpr.IsMapped(fs)) {
+			CVTDQ2PS(fpr.RX(fd), fpr.R(fs));
+		} else {
+			// If fs was fd, we'd be in the case above since we mapped fd.
+			MOVSS(fpr.RX(fd), fpr.R(fs));
+			CVTDQ2PS(fpr.RX(fd), fpr.R(fd));
+		}
+		break;
+
+	case 36: //FsI(fd) = (int)	F(fs);			 break; //cvt.w.s
+		// Uses the current rounding mode.
+		execRounding(&XEmitter::CVTSS2SI, -1);
 		break;
 
 	case 12: //FsI(fd) = (int)floorf(F(fs)+0.5f); break; //round.w.s
+		execRounding(&XEmitter::CVTSS2SI, 0);
+		break;
 	case 14: //FsI(fd) = (int)ceilf (F(fs)); break; //ceil.w.s
+		execRounding(&XEmitter::CVTSS2SI, 2);
+		break;
 	case 15: //FsI(fd) = (int)floorf(F(fs)); break; //floor.w.s
-	case 36: //FsI(fd) = (int)	F(fs);			 break; //cvt.w.s
+		execRounding(&XEmitter::CVTSS2SI, 1);
+		break;
 	default:
-		Comp_Generic(op);
+		DISABLE;
 		return;
 	}
+	fpr.ReleaseSpillLocks();
 }
 
-void Jit::Comp_mxc1(u32 op)
-{
+void Jit::Comp_mxc1(MIPSOpcode op) {
 	CONDITIONAL_DISABLE;
 
 	int fs = _FS;
-	int rt = _RT;
+	MIPSGPReg rt = _RT;
 
-	switch((op >> 21) & 0x1f) 
-	{
+	switch ((op >> 21) & 0x1f) {
 	case 0: // R(rt) = FI(fs); break; //mfc1
-		if (rt != 0)
-		{
-			// Cross move! slightly tricky
-			fpr.StoreFromRegister(fs);
-			gpr.Lock(rt);
-			gpr.BindToRegister(rt, false, true);
+		if (rt == MIPS_REG_ZERO)
+			return;
+		gpr.MapReg(rt, false, true);
+		// If fs is not mapped, most likely it's being abandoned.
+		// Just load from memory in that case.
+		if (fpr.R(fs).IsSimpleReg()) {
+			MOVD_xmm(gpr.R(rt), fpr.RX(fs));
+		} else {
 			MOV(32, gpr.R(rt), fpr.R(fs));
+		}
+		break;
+
+	case 2: // R(rt) = currentMIPS->ReadFCR(fs); break; //cfc1
+		if (rt == MIPS_REG_ZERO)
+			return;
+		if (fs == 31) {
+			bool wasImm = gpr.IsImm(MIPS_REG_FPCOND);
+			if (!wasImm) {
+				gpr.Lock(rt, MIPS_REG_FPCOND);
+				gpr.MapReg(MIPS_REG_FPCOND, true, false);
+			}
+			gpr.MapReg(rt, false, true);
+			MOV(32, gpr.R(rt), M(&mips_->fcr31));
+			if (wasImm) {
+				if (gpr.GetImm(MIPS_REG_FPCOND) & 1) {
+					OR(32, gpr.R(rt), Imm32(1 << 23));
+				} else {
+					AND(32, gpr.R(rt), Imm32(~(1 << 23)));
+				}
+			} else {
+				AND(32, gpr.R(rt), Imm32(~(1 << 23)));
+				MOV(32, R(TEMPREG), gpr.R(MIPS_REG_FPCOND));
+				AND(32, R(TEMPREG), Imm32(1));
+				SHL(32, R(TEMPREG), Imm8(23));
+				OR(32, gpr.R(rt), R(TEMPREG));
+			}
 			gpr.UnlockAll();
+		} else if (fs == 0) {
+			gpr.SetImm(rt, MIPSState::FCR0_VALUE);
+		} else {
+			Comp_Generic(op);
 		}
 		return;
 
-	case 2: // R(rt) = currentMIPS->ReadFCR(fs); break; //cfc1
-		Comp_Generic(op);
-		return;
-
 	case 4: //FI(fs) = R(rt);	break; //mtc1
-		// Cross move! slightly tricky
-		gpr.StoreFromRegister(rt);
-		fpr.SpillLock(fs);
-		fpr.BindToRegister(fs, false, true);
-		MOVSS(fpr.RX(fs), gpr.R(rt));
-		fpr.ReleaseSpillLocks();
+		fpr.MapReg(fs, false, true);
+		if (gpr.IsImm(rt) && gpr.GetImm(rt) == 0) {
+			XORPS(fpr.RX(fs), fpr.R(fs));
+		} else {
+			gpr.KillImmediate(rt, true, false);
+			MOVD_xmm(fpr.RX(fs), gpr.R(rt));
+		}
 		return;
 
 	case 6: //currentMIPS->WriteFCR(fs, R(rt)); break; //ctc1
-		Comp_Generic(op);
+		if (fs == 31) {
+			// Must clear before setting, since ApplyRoundingMode() assumes it was cleared.
+			RestoreRoundingMode();
+			if (gpr.IsImm(rt)) {
+				gpr.SetImm(MIPS_REG_FPCOND, (gpr.GetImm(rt) >> 23) & 1);
+				MOV(32, M(&mips_->fcr31), Imm32(gpr.GetImm(rt) & 0x0181FFFF));
+				if ((gpr.GetImm(rt) & 0x1000003) == 0) {
+					// Default nearest / no-flush mode, just leave it cleared.
+				} else {
+					UpdateRoundingMode();
+					ApplyRoundingMode();
+				}
+			} else {
+				gpr.Lock(rt, MIPS_REG_FPCOND);
+				gpr.MapReg(rt, true, false);
+				gpr.MapReg(MIPS_REG_FPCOND, false, true);
+				MOV(32, gpr.R(MIPS_REG_FPCOND), gpr.R(rt));
+				SHR(32, gpr.R(MIPS_REG_FPCOND), Imm8(23));
+				AND(32, gpr.R(MIPS_REG_FPCOND), Imm32(1));
+				MOV(32, M(&mips_->fcr31), gpr.R(rt));
+				AND(32, M(&mips_->fcr31), Imm32(0x0181FFFF));
+				gpr.UnlockAll();
+				UpdateRoundingMode();
+				ApplyRoundingMode();
+			}
+		} else {
+			Comp_Generic(op);
+		}
 		return;
 	}
 }
 
 }	// namespace MIPSComp
+
+#endif // PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)

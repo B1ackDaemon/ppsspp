@@ -20,14 +20,15 @@
 // other parts of the code. Any definitions that are only used by the core should be
 // placed in "Common.h" instead.
 
-#ifndef _COMMONTYPES_H_
-#define _COMMONTYPES_H_
+#pragma once
 
-#ifdef __arm__
-#if !defined(ARM)
-#define ARM
-#endif
-#endif
+struct u24_be {
+	unsigned char value[3]; 
+
+	operator unsigned int(){
+		return 0x00000000 | (value[0] << 16) | (value[1] << 8) | (value[2] << 0);
+	}
+};
 
 #ifdef _WIN32
 
@@ -54,5 +55,3 @@ typedef signed int s32;
 typedef signed long long s64;
 
 #endif // _WIN32
-
-#endif // _COMMONTYPES_H_

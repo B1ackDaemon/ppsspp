@@ -17,15 +17,13 @@
 
 #pragma once
 
-#include "../../Globals.h"
-
-#include "JitCommon/JitCommon.h"
-
-#include "../HLE/HLE.h"
+#include "Common/CommonTypes.h"
+#include "Core/MIPS/MIPS.h"
 
 // Invalid branch target address
 #define INVALIDTARGET 0xFFFFFFFF
 
+#define MIPS_MAKE_B(offs)   (0x10000000 | ((offs) & 0xFFFF))
 #define MIPS_MAKE_J(addr)   (0x08000000 | ((addr)>>2))
 #define MIPS_MAKE_JAL(addr) (0x0C000000 | ((addr)>>2))
 #define MIPS_MAKE_JR_RA()   (0x03e00008)
@@ -33,23 +31,37 @@
 
 #define MIPS_MAKE_ADDIU(dreg, sreg, immval) ((9 << 26) | ((dreg) << 16) | ((sreg) << 21) | (immval))
 #define MIPS_MAKE_LUI(reg, immval) (0x3c000000 | ((reg) << 16) | (immval))
+#define MIPS_MAKE_ORI(rt, rs, immval) (0x34000000 | ((rs) << 21) | ((rt) << 16) | (immval))
+#define MIPS_MAKE_LW(rt, rs, immval) (0x8c000000 | ((rs) << 21) | ((rt) << 16) | (immval))
 #define MIPS_MAKE_SYSCALL(module, function) GetSyscallOp(module, GetNibByName(module, function))
-#define MIPS_MAKE_BREAK() (13)  // ! :)
+#define MIPS_MAKE_BREAK(n) (((n) << 6) | 13)  // ! :)
 
-#define MIPS_GET_RS(op) ((op>>21) & 0x1F)
-#define MIPS_GET_RT(op) ((op>>16) & 0x1F)
-#define MIPS_GET_RD(op) ((op>>11) & 0x1F)
+#define MIPS_GET_OP(op)   ((op>>26) & 0x3F)
+#define MIPS_GET_FUNC(op) (op & 0x3F)
+#define MIPS_GET_SA(op)   ((op>>6) & 0x1F)
+
+#define MIPS_GET_RS(op) MIPSGPReg((op>>21) & 0x1F)
+#define MIPS_GET_RT(op) MIPSGPReg((op>>16) & 0x1F)
+#define MIPS_GET_RD(op) MIPSGPReg((op>>11) & 0x1F)
 
 #define MIPS_GET_FS(op) ((op>>11) & 0x1F)
 #define MIPS_GET_FT(op) ((op>>16) & 0x1F)
 #define MIPS_GET_FD(op) ((op>>6 ) & 0x1F)
+
+#define MIPS_GET_VD(op) (op & 0x7F)
+#define MIPS_GET_VS(op) ((op>>8) & 0x7F)
+#define MIPS_GET_VT(op) ((op>>16) & 0x7F)
 
 
 namespace MIPSCodeUtils
 {
 	u32 GetCallTarget(u32 addr);
 	u32 GetBranchTarget(u32 addr);
+	// Ignores bltzal/etc. instructions that change RA.
+	u32 GetBranchTargetNoRA(u32 addr);
+	u32 GetBranchTargetNoRA(u32 addr, MIPSOpcode op);
 	u32 GetJumpTarget(u32 addr);
 	u32 GetSureBranchTarget(u32 addr);
-	void RewriteSysCalls(u32 startAddr, u32 endAddr);
+	bool IsVFPUBranch(MIPSOpcode op);
+	bool IsBranch(MIPSOpcode op);
 }

@@ -16,30 +16,17 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 
-#include "NullGpu.h"
-#include "../GPUState.h"
-#include "../ge_constants.h"
-#include "../../Core/MemMap.h"
-#include "../../Core/HLE/sceKernelInterrupt.h"
-#include "../../Core/HLE/sceGe.h"
+#include "GPU/Null/NullGpu.h"
+#include "GPU/GPUState.h"
+#include "GPU/ge_constants.h"
+#include "Core/Debugger/Breakpoints.h"
+#include "Core/MemMap.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/HLE/sceKernelInterrupt.h"
+#include "Core/HLE/sceGe.h"
 
-NullGPU::NullGPU()
-{
-}
-
-NullGPU::~NullGPU()
-{
-}
-
-u32 NullGPU::DrawSync(int mode)
-{
-	if (mode == 0)  // Wait for completion
-	{
-		__RunOnePendingInterrupt();
-	}
-
-	return GPUCommon::DrawSync(mode);
-}
+NullGPU::NullGPU() : GPUCommon(nullptr, nullptr) { }
+NullGPU::~NullGPU() { }
 
 void NullGPU::FastRunLoop(DisplayList &list) {
 	for (; downcount > 0; --downcount) {
@@ -54,8 +41,7 @@ void NullGPU::FastRunLoop(DisplayList &list) {
 	}
 }
 
-void NullGPU::ExecuteOp(u32 op, u32 diff)
-{
+void NullGPU::ExecuteOp(u32 op, u32 diff) {
 	u32 cmd = op >> 24;
 	u32 data = op & 0xFFFFFF;
 
@@ -66,14 +52,12 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 		DEBUG_LOG(G3D,"DL BASE: %06x", data);
 		break;
 
-	case GE_CMD_VADDR:		/// <<8????
-		gstate_c.vertexAddr = ((gstate.base & 0x00FF0000) << 8)|data;
-		DEBUG_LOG(G3D,"DL VADDR: %06x", gstate_c.vertexAddr);
+	case GE_CMD_VADDR:
+		gstate_c.vertexAddr = gstate_c.getRelativeAddress(data);
 		break;
 
 	case GE_CMD_IADDR:
-		gstate_c.indexAddr	= ((gstate.base & 0x00FF0000) << 8)|data;
-		DEBUG_LOG(G3D,"DL IADDR: %06x", gstate_c.indexAddr);
+		gstate_c.indexAddr	= gstate_c.getRelativeAddress(data);
 		break;
 
 	case GE_CMD_PRIM:
@@ -93,7 +77,6 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 		}
 		break;
 
-	// The arrow and other rotary items in Puzbob are bezier patches, strangely enough.
 	case GE_CMD_BEZIER:
 		{
 			int bz_ucount = data & 0xFF;
@@ -108,19 +91,15 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 			int sp_vcount = (data >> 8) & 0xFF;
 			int sp_utype = (data >> 16) & 0x3;
 			int sp_vtype = (data >> 18) & 0x3;
-			//drawSpline(sp_ucount, sp_vcount, sp_utype, sp_vtype);
 			DEBUG_LOG(G3D,"DL DRAW SPLINE: %i x %i, %i x %i", sp_ucount, sp_vcount, sp_utype, sp_vtype);
 		}
 		break;
 
-	case GE_CMD_BJUMP:
-		// bounding box jump. Let's just not jump, for now.
-		DEBUG_LOG(G3D,"DL BBOX JUMP - unimplemented");
-		break;
-
 	case GE_CMD_BOUNDINGBOX:
-		// bounding box test. Let's do nothing.
-		DEBUG_LOG(G3D,"DL BBOX TEST - unimplemented");
+		if (data != 0)
+			DEBUG_LOG(G3D, "Unsupported bounding box: %06x", data);
+		// bounding box test. Let's assume the box was within the drawing region.
+		currentList->bboxResult = true;
 		break;
 
 	case GE_CMD_VERTEXTYPE:
@@ -181,23 +160,23 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 		break;
 
 	case GE_CMD_TEXSCALEU: 
-		gstate_c.uScale = getFloat24(data); 
-		DEBUG_LOG(G3D, "DL Texture U Scale: %f", gstate_c.uScale);
+		gstate_c.uv.uScale = getFloat24(data); 
+		DEBUG_LOG(G3D, "DL Texture U Scale: %f", gstate_c.uv.uScale);
 		break;
 
 	case GE_CMD_TEXSCALEV: 
-		gstate_c.vScale = getFloat24(data); 
-		DEBUG_LOG(G3D, "DL Texture V Scale: %f", gstate_c.vScale);
+		gstate_c.uv.vScale = getFloat24(data); 
+		DEBUG_LOG(G3D, "DL Texture V Scale: %f", gstate_c.uv.vScale);
 		break;
 
 	case GE_CMD_TEXOFFSETU: 
-		gstate_c.uOff = getFloat24(data);	
-		DEBUG_LOG(G3D, "DL Texture U Offset: %f", gstate_c.uOff);
+		gstate_c.uv.uOff = getFloat24(data);	
+		DEBUG_LOG(G3D, "DL Texture U Offset: %f", gstate_c.uv.uOff);
 		break;
 
 	case GE_CMD_TEXOFFSETV: 
-		gstate_c.vOff = getFloat24(data);	
-		DEBUG_LOG(G3D, "DL Texture V Offset: %f", gstate_c.vOff);
+		gstate_c.uv.vOff = getFloat24(data);	
+		DEBUG_LOG(G3D, "DL Texture V Offset: %f", gstate_c.uv.vOff);
 		break;
 
 	case GE_CMD_SCISSOR1:
@@ -224,24 +203,18 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 		break;
 
 	case GE_CMD_FRAMEBUFPTR:
-		{
-			u32 ptr = op & 0xFFE000;
-			DEBUG_LOG(G3D, "DL FramebufPtr: %08x", ptr);
-		}
+		DEBUG_LOG(G3D, "DL FramebufPtr: %08x", data);
 		break;
 
 	case GE_CMD_FRAMEBUFWIDTH:
-		{
-			u32 w = data & 0xFFFFFF;
-			DEBUG_LOG(G3D, "DL FramebufWidth: %i", w);
-		}
+		DEBUG_LOG(G3D, "DL FramebufWidth: %i", data);
 		break;
 
 	case GE_CMD_FRAMEBUFPIXFORMAT:
 		break;
 
 	case GE_CMD_TEXADDR0:
-		gstate_c.textureChanged=true;
+		gstate_c.Dirty(DIRTY_TEXTURE_IMAGE);
 	case GE_CMD_TEXADDR1:
 	case GE_CMD_TEXADDR2:
 	case GE_CMD_TEXADDR3:
@@ -253,7 +226,7 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 		break;
 
 	case GE_CMD_TEXBUFWIDTH0:
-		gstate_c.textureChanged=true;
+		gstate_c.Dirty(DIRTY_TEXTURE_IMAGE);
 	case GE_CMD_TEXBUFWIDTH1:
 	case GE_CMD_TEXBUFWIDTH2:
 	case GE_CMD_TEXBUFWIDTH3:
@@ -261,7 +234,7 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 	case GE_CMD_TEXBUFWIDTH5:
 	case GE_CMD_TEXBUFWIDTH6:
 	case GE_CMD_TEXBUFWIDTH7:
-		DEBUG_LOG(G3D,"DL Texture BUFWIDTHess %i: %06x", cmd-GE_CMD_TEXBUFWIDTH0, data);
+		DEBUG_LOG(G3D,"DL Texture BUFWIDTH %i: %06x", cmd-GE_CMD_TEXBUFWIDTH0, data);
 		break;
 
 	case GE_CMD_CLUTADDR:
@@ -275,7 +248,7 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 	case GE_CMD_LOADCLUT:
 		// This could be used to "dirty" textures with clut.
 		{
-			u32 clutAddr = ((gstate.clutaddrupper & 0xFF0000)<<8) | (gstate.clutaddr & 0xFFFFFF);
+			u32 clutAddr = gstate.getClutAddress();
 			if (clutAddr)
 			{
 				DEBUG_LOG(G3D,"DL Clut load: %08x", clutAddr);
@@ -292,8 +265,8 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 
 	case GE_CMD_TRANSFERSRCW:
 		{
-			u32 xferSrc = gstate.transfersrc | ((data&0xFF0000)<<8);
-			u32 xferSrcW = gstate.transfersrcw & 1023;
+			u32 xferSrc = (gstate.transfersrc & 0x00FFFFFF) | ((data & 0xFF0000) << 8);
+			u32 xferSrcW = data & 0x3FF;
 			DEBUG_LOG(G3D,"Block Transfer Src: %08x	W: %i", xferSrc, xferSrcW);
 			break;
 		}
@@ -301,8 +274,8 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 
 	case GE_CMD_TRANSFERDSTW:
 		{
-			u32 xferDst= gstate.transferdst | ((data&0xFF0000)<<8);
-			u32 xferDstW = gstate.transferdstw & 1023;
+			u32 xferDst = (gstate.transferdst & 0x00FFFFFF) | ((data & 0xFF0000) << 8);
+			u32 xferDstW = data & 0x3FF;
 			DEBUG_LOG(G3D,"Block Transfer Dest: %08x	W: %i", xferDst, xferDstW);
 			break;
 		}
@@ -333,15 +306,43 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 
 	case GE_CMD_TRANSFERSTART:
 		{
-			DEBUG_LOG(G3D, "DL Texture Transfer Start: PixFormat %i", data);
-			// TODO: Here we should check if the transfer overlaps a framebuffer or any textures,
-			// and take appropriate action. If not, this should just be a block transfer within
-			// GPU memory which could be implemented by a copy loop.
+			u32 srcBasePtr = gstate.getTransferSrcAddress();
+			u32 srcStride = gstate.getTransferSrcStride();
+
+			u32 dstBasePtr = gstate.getTransferDstAddress();
+			u32 dstStride = gstate.getTransferDstStride();
+
+			int srcX = gstate.getTransferSrcX();
+			int srcY = gstate.getTransferSrcY();
+
+			int dstX = gstate.getTransferDstX();
+			int dstY = gstate.getTransferDstY();
+
+			int width = gstate.getTransferWidth();
+			int height = gstate.getTransferHeight();
+
+			int bpp = gstate.getTransferBpp();
+
+			DEBUG_LOG(G3D, "Block transfer: %08x/%x -> %08x/%x, %ix%ix%i (%i,%i)->(%i,%i)", srcBasePtr, srcStride, dstBasePtr, dstStride, width, height, bpp, srcX, srcY, dstX, dstY);
+
+			for (int y = 0; y < height; y++) {
+				const u8 *src = Memory::GetPointer(srcBasePtr + ((y + srcY) * srcStride + srcX) * bpp);
+				u8 *dst = Memory::GetPointer(dstBasePtr + ((y + dstY) * dstStride + dstX) * bpp);
+				memcpy(dst, src, width * bpp);
+			}
+
+#ifndef MOBILE_DEVICE
+			CBreakPoints::ExecMemCheck(srcBasePtr + (srcY * srcStride + srcX) * bpp, false, height * srcStride * bpp, currentMIPS->pc);
+			CBreakPoints::ExecMemCheck(dstBasePtr + (srcY * dstStride + srcX) * bpp, true, height * dstStride * bpp, currentMIPS->pc);
+#endif
+
+			// TODO: Correct timing appears to be 1.9, but erring a bit low since some of our other timing is inaccurate.
+			cyclesExecuted += ((height * width * bpp) * 16) / 10;
 			break;
 		}
 
 	case GE_CMD_TEXSIZE0:
-		gstate_c.textureChanged=true;
+		gstate_c.Dirty(DIRTY_TEXTURE_IMAGE);
 		gstate_c.curTextureWidth = 1 << (gstate.texsize[0] & 0xf);
 		gstate_c.curTextureHeight = 1 << ((gstate.texsize[0]>>8) & 0xf);
 		//fall thru - ignoring the mipmap sizes for now
@@ -356,17 +357,11 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 		break;
 
 	case GE_CMD_ZBUFPTR:
-		{
-			u32 ptr = op & 0xFFE000;
-			DEBUG_LOG(G3D,"Zbuf Ptr: %06x", ptr);
-		}
+		DEBUG_LOG(G3D,"Zbuf Ptr: %06x", data);
 		break;
 
 	case GE_CMD_ZBUFWIDTH:
-		{
-			u32 w = data & 0xFFFFFF;
-			DEBUG_LOG(G3D,"Zbuf Width: %i", w);
-		}
+		DEBUG_LOG(G3D,"Zbuf Width: %i", data);
 		break;
 
 	case GE_CMD_AMBIENTCOLOR:
@@ -418,7 +413,6 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 			int c = n % 3;
 			float val = getFloat24(data);
 			DEBUG_LOG(G3D,"DL Light %i %c pos: %f", l, c+'X', val);
-			gstate_c.lightpos[l][c] = val;
 		}
 		break;
 
@@ -432,7 +426,6 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 			int c = n % 3;
 			float val = getFloat24(data);
 			DEBUG_LOG(G3D,"DL Light %i %c dir: %f", l, c+'X', val);
-			gstate_c.lightdir[l][c] = val;
 		}
 		break;
 
@@ -446,7 +439,6 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 			int c = n % 3;
 			float val = getFloat24(data);
 			DEBUG_LOG(G3D,"DL Light %i %c att: %f", l, c+'X', val);
-			gstate_c.lightatt[l][c] = val;
 		}
 		break;
 
@@ -461,19 +453,17 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 
 			int l = (cmd - GE_CMD_LAC0) / 3;
 			int t = (cmd - GE_CMD_LAC0) % 3;
-			gstate_c.lightColor[t][l][0] = r;
-			gstate_c.lightColor[t][l][1] = g;
-			gstate_c.lightColor[t][l][2] = b;
-		}
+			// DEBUG_LOG(G3D, "DL Light color %i %c att: %f", l, c + 'X', val);
+	}
 		break;
 
-	case GE_CMD_VIEWPORTX1:
-	case GE_CMD_VIEWPORTY1:
-	case GE_CMD_VIEWPORTZ1:
-	case GE_CMD_VIEWPORTX2:
-	case GE_CMD_VIEWPORTY2:
-	case GE_CMD_VIEWPORTZ2:
-		DEBUG_LOG(G3D,"DL Viewport param %i: %f", cmd-GE_CMD_VIEWPORTX1, getFloat24(data));
+	case GE_CMD_VIEWPORTXSCALE:
+	case GE_CMD_VIEWPORTYSCALE:
+	case GE_CMD_VIEWPORTZSCALE:
+	case GE_CMD_VIEWPORTXCENTER:
+	case GE_CMD_VIEWPORTYCENTER:
+	case GE_CMD_VIEWPORTZCENTER:
+		DEBUG_LOG(G3D,"DL Viewport param %i: %f", cmd-GE_CMD_VIEWPORTXSCALE, getFloat24(data));
 		break;
 	case GE_CMD_LIGHTENABLE0:
 	case GE_CMD_LIGHTENABLE1:
@@ -611,53 +601,71 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 		break;
 
 	case GE_CMD_WORLDMATRIXNUMBER:
-		DEBUG_LOG(G3D,"DL World matrix # %i", data);
 		gstate.worldmtxnum = data&0xF;
 		break;
 
 	case GE_CMD_WORLDMATRIXDATA:
-		DEBUG_LOG(G3D,"DL World matrix data # %f", getFloat24(data));
-		gstate.worldMatrix[gstate.worldmtxnum++] = getFloat24(data);
+		{
+			int num = gstate.worldmtxnum & 0xF;
+			if (num < 12) {
+				gstate.worldMatrix[num] = getFloat24(data);
+			}
+			gstate.worldmtxnum = (++num) & 0xF;
+		}
 		break;
 
 	case GE_CMD_VIEWMATRIXNUMBER:
-		DEBUG_LOG(G3D,"DL VIEW matrix # %i", data);
 		gstate.viewmtxnum = data&0xF;
 		break;
 
 	case GE_CMD_VIEWMATRIXDATA:
-		DEBUG_LOG(G3D,"DL VIEW matrix data # %f", getFloat24(data));
-		gstate.viewMatrix[gstate.viewmtxnum++] = getFloat24(data);
+		{
+			int num = gstate.viewmtxnum & 0xF;
+			if (num < 12) {
+				gstate.viewMatrix[num] = getFloat24(data);
+			}
+			gstate.viewmtxnum = (++num) & 0xF;
+		}
 		break;
 
 	case GE_CMD_PROJMATRIXNUMBER:
-		DEBUG_LOG(G3D,"DL PROJECTION matrix # %i", data);
 		gstate.projmtxnum = data&0xF;
 		break;
 
 	case GE_CMD_PROJMATRIXDATA:
-		DEBUG_LOG(G3D,"DL PROJECTION matrix data # %f", getFloat24(data));
-		gstate.projMatrix[gstate.projmtxnum++] = getFloat24(data);
+		{
+			int num = gstate.projmtxnum & 0xF;
+			gstate.projMatrix[num] = getFloat24(data);
+			gstate.projmtxnum = (++num) & 0xF;
+		}
 		break;
 
 	case GE_CMD_TGENMATRIXNUMBER:
-		DEBUG_LOG(G3D,"DL TGEN matrix # %i", data);
 		gstate.texmtxnum = data&0xF;
 		break;
 
 	case GE_CMD_TGENMATRIXDATA:
-		DEBUG_LOG(G3D,"DL TGEN matrix data # %f", getFloat24(data));
-		gstate.tgenMatrix[gstate.texmtxnum++] = getFloat24(data);
+		{
+			int num = gstate.texmtxnum & 0xF;
+			if (num < 12) {
+				gstate.tgenMatrix[num] = getFloat24(data);
+			}
+			gstate.texmtxnum = (++num) & 0xF;
+		}
 		break;
 
 	case GE_CMD_BONEMATRIXNUMBER:
-		DEBUG_LOG(G3D,"DL BONE matrix #%i", data);
-		gstate.boneMatrixNumber = data;
+		gstate.boneMatrixNumber = data & 0x7F;
 		break;
 
 	case GE_CMD_BONEMATRIXDATA:
-		DEBUG_LOG(G3D,"DL BONE matrix data #%i %f", gstate.boneMatrixNumber, getFloat24(data));
-		gstate.boneMatrix[gstate.boneMatrixNumber++] = getFloat24(data);
+		{
+			int num = gstate.boneMatrixNumber & 0x7F;
+			if (num < 96) {
+				gstate.boneMatrix[num] = getFloat24(data);
+			}
+			gstate.boneMatrixNumber = (++num) & 0x7F;
+		}
 		break;
 
 	default:
@@ -666,20 +674,46 @@ void NullGPU::ExecuteOp(u32 op, u32 diff)
 	}
 }
 
-void NullGPU::UpdateStats()
-{
-	gpuStats.numVertexShaders = 0;
-	gpuStats.numFragmentShaders = 0;
-	gpuStats.numShaders = 0;
-	gpuStats.numTextures = 0;
+void NullGPU::GetStats(char *buffer, size_t bufsize) {
+	snprintf(buffer, bufsize, "NullGPU: (N/A)");
 }
 
-void NullGPU::InvalidateCache(u32 addr, int size)
-{
+void NullGPU::InvalidateCache(u32 addr, int size, GPUInvalidationType type) {
 	// Nothing to invalidate.
 }
 
-void NullGPU::InvalidateCacheHint(u32 addr, int size)
-{
-	// Nothing to invalidate.
+void NullGPU::NotifyVideoUpload(u32 addr, int size, int width, int format) {
+	// Nothing to do.
+}
+
+bool NullGPU::PerformMemoryCopy(u32 dest, u32 src, int size) {
+	// Nothing to update.
+	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
+	return false;
+}
+
+bool NullGPU::PerformMemorySet(u32 dest, u8 v, int size) {
+	// Nothing to update.
+	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
+	return false;
+}
+
+bool NullGPU::PerformMemoryDownload(u32 dest, int size) {
+	// Nothing to update.
+	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
+	return false;
+}
+
+bool NullGPU::PerformMemoryUpload(u32 dest, int size) {
+	// Nothing to update.
+	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
+	return false;
+}
+
+bool NullGPU::PerformStencilUpload(u32 dest, int size) {
+	return false;
+}
+
+bool NullGPU::FramebufferReallyDirty() {
+	return !(gstate_c.skipDrawReason & SKIPDRAW_SKIPFRAME);
 }

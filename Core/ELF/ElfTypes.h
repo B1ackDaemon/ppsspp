@@ -15,7 +15,9 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#pragma once 
+#pragma once
+
+#include "Common/Common.h"
 
 ///////////////////////
 // ELF Header Constants
@@ -23,26 +25,27 @@
 // File type
 enum ElfType
 {
-	ET_NONE        =0,
-	ET_REL         =1,
-	ET_EXEC        =2,
-	ET_DYN         =3,
-	ET_CORE        =4,
-	ET_LOPROC =0xFF00,
-	ET_HIPROC =0xFFFF,
+    ET_NONE    = 0,
+    ET_REL     = 1,
+    ET_EXEC    = 2,
+    ET_DYN     = 3,
+    ET_CORE    = 4,
+    ET_LOPROC  = 0xFF00,
+    ET_HIPROC  = 0xFFFF,
+    ET_PSP_PRX = 0xFFA0,
 };
 
 // Machine/Architecture
 enum ElfMachine
 {
-	EM_NONE  =0,
-	EM_M32   =1,
-	EM_SPARC =2,
-	EM_386   =3,
-	EM_68K   =4,
-	EM_88K   =5,
-	EM_860   =7,
-	EM_MIPS  =8
+	EM_NONE  = 0,
+	EM_M32   = 1,
+	EM_SPARC = 2,
+	EM_386   = 3,
+	EM_68K   = 4,
+	EM_88K   = 5,
+	EM_860   = 7,
+	EM_MIPS  = 8
 };
 
 // File version
@@ -75,6 +78,34 @@ enum ElfMachine
 #define ELFDATANONE 0
 #define ELFDATA2LSB 1
 #define ELFDATA2MSB 2
+
+// MIPS-specific header flags.
+#define EF_MIPS_NOREORDER 0x00000001
+#define EF_MIPS_PIC       0x00000002
+#define EF_MIPS_CPIC      0x00000004
+#define EF_MIPS_XGOT      0x00000008
+#define EF_MIPS_UCODE     0x00000010
+#define EF_MIPS_ABI2      0x00000020
+#define EF_MIPS_DYNAMIC   0x00000040
+#define EF_MIPS_32BITMODE 0x00000100
+#define EF_MIPS_ABI_MASK  0x0000f000
+#define EF_MIPS_ABI_O32   0x00001000
+#define EF_MIPS_ABI_O64   0x00002000
+#define E_MIPS_ABI_EABI32 0x00003000
+#define E_MIPS_ABI_EABI64 0x00004000
+#define EF_MIPS_MACH_MASK 0x00ff0000
+#define EF_MIPS_MACH_PSP  0x00a20000
+#define EF_MIPS_ARCH_MASK 0xf0000000
+#define EF_MIPS_ARCH_1    0x00000000
+#define EF_MIPS_ARCH_2    0x10000000
+#define EF_MIPS_ARCH_3    0x20000000
+#define EF_MIPS_ARCH_4    0x30000000
+#define EF_MIPS_ARCH_5    0x40000000
+#define EF_MIPS_ARCH_32   0x50000000
+#define EF_MIPS_ARCH_64   0x60000000
+#define EF_MIPS_ARCH_32R2 0x70000000
+#define EF_MIPS_ARCH_64R2 0x80000000
+
 
 
 /////////////////////
@@ -117,6 +148,8 @@ enum ElfSectionFlags
 	SHF_WRITE     =0x1,
 	SHF_ALLOC     =0x2,
 	SHF_EXECINSTR =0x4,
+	SHF_MERGE     =0x10,
+	SHF_STRINGS   =0x20,
 	SHF_MASKPROC  =0xF0000000,
 };
 
@@ -163,6 +196,10 @@ enum ElfSectionFlags
 #define PT_LOPROC  0x70000000
 #define PT_HIPROC  0x7FFFFFFF
 
+// Custom segment types
+#define PT_PSPREL1 0x700000a0
+#define PT_PSPREL2 0x700000a1
+
 // Segment flags
 #define PF_X 1
 #define PF_W 2
@@ -196,11 +233,11 @@ enum ElfSectionFlags
 #define DT_LOPROC   0x70000000
 #define DT_HIPROC   0x7FFFFFFF
 
-typedef u32  Elf32_Addr;
-typedef u16 Elf32_Half;
-typedef u32 Elf32_Off;
-typedef s32 Elf32_Sword;
-typedef u32 Elf32_Word;
+typedef u32_le Elf32_Addr;
+typedef u16_le Elf32_Half;
+typedef u32_le Elf32_Off;
+typedef s32_le Elf32_Sword;
+typedef u32_le Elf32_Word;
 
 
 // ELF file header
@@ -283,7 +320,7 @@ struct Elf32_Rela
 #define ELF32_R_TYPE(i) ((unsigned char)(i))
 #define ELF32_R_INFO(s,t) (((s)<<8 )+(unsigned char)(t))
 
-
+/*
 struct Elf32_Dyn 
 {
 	Elf32_Sword d_tag;
@@ -293,3 +330,4 @@ struct Elf32_Dyn
         Elf32_Addr d_ptr;
     } d_un;
 };
+*/

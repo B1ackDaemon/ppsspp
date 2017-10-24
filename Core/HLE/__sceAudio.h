@@ -19,6 +19,16 @@
 
 #include "sceAudio.h"
 
+struct AudioDebugStats {
+	int buffered;
+	int watermark;
+	int bufsize;
+	int underrunCount;
+	int overrunCount;
+	int instantSampleRate;
+	int lastPushSize;
+};
+
 // Easy interface for sceAudio to write to, to keep the complexity in check.
 
 void __AudioInit();
@@ -29,5 +39,13 @@ void __AudioSetOutputFrequency(int freq);
 
 // May return SCE_ERROR_AUDIO_CHANNEL_BUSY if buffer too large
 u32 __AudioEnqueue(AudioChannel &chan, int chanNum, bool blocking);
+void __AudioWakeThreads(AudioChannel &chan, int result, int step);
+void __AudioWakeThreads(AudioChannel &chan, int result);
 
-int __AudioMix(short *outstereo, int numSamples);
+int __AudioMix(short *outstereo, int numSamples, int sampleRate);
+const AudioDebugStats *__AudioGetDebugStats();
+void __PushExternalAudio(const s32 *audio, int numSamples);  // Should not be used in-game, only at the menu!
+
+// Audio Dumping stuff
+void __StartLogAudio(const std::string& filename);
+void __StopLogAudio();

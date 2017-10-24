@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "Common/CommonWindows.h"
 
 class Dialog
 {
@@ -9,10 +9,11 @@ protected:
 	HWND m_hParent;
 	HWND m_hDlg;
 	LPCSTR m_hResource;
+	bool m_bValid;
 
 	virtual BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam) 
 	{
-		MessageBox(0,"WTF? Pure Call",0,0);	
+		MessageBox(0,L"WTF? Pure Call",0,0);	
 		return 0;
 	}
 	static INT_PTR CALLBACK DlgProcStatic(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
@@ -36,6 +37,7 @@ class DialogManager
 {
 public:
 	static void AddDlg(Dialog *dialog);
+	static void RemoveDlg(Dialog *dialog);
 	static bool IsDialogMessage(LPMSG message);
 	static void EnableAll(BOOL enable);
 	static void DestroyAll();

@@ -17,25 +17,16 @@
 
 #pragma once
 
-#include <cstring>
 #include <string>
-#include "../Globals.h"
+#include "Common/CommonTypes.h"
 
 struct InputState;
+class GraphicsContext;
 
-class PMixer
-{
-public:
-	PMixer() {}
-	virtual ~PMixer() {}
-	virtual int Mix(short *stereoout, int numSamples) {memset(stereoout,0,numSamples*2*sizeof(short)); return numSamples;}
-};
-
-class Host
-{
+// TODO: Whittle this down. Collecting a bunch of random stuff like this isn't good design :P
+class Host {
 public:
 	virtual ~Host() {}
-	//virtual void StartThread()
 	virtual void UpdateUI() {}
 
 	virtual void UpdateMemView() {}
@@ -43,31 +34,40 @@ public:
 
 	virtual void SetDebugMode(bool mode) { }
 
-	virtual bool InitGL(std::string *error_string) = 0;
-	virtual void ShutdownGL() = 0;
+	virtual bool InitGraphics(std::string *error_string, GraphicsContext **ctx) = 0;
+	virtual void ShutdownGraphics() = 0;
 
-	virtual void InitSound(PMixer *mixer) = 0;
+	virtual void InitSound() = 0;
 	virtual void UpdateSound() {}
+	virtual void GoFullscreen(bool) {}
 	virtual void ShutdownSound() = 0;
 	virtual void PollControllers(InputState &input_state) {}
+	virtual void ToggleDebugConsoleVisibility() {}
 
 	//this is sent from EMU thread! Make sure that Host handles it properly!
 	virtual void BootDone() {}
 
 	virtual bool IsDebuggingEnabled() {return true;}
-	virtual bool AttemptLoadSymbolMap() {return false;}
+	virtual bool AttemptLoadSymbolMap();
 	virtual void SaveSymbolMap() {}
 	virtual void SetWindowTitle(const char *message) {}
 
 	virtual void SendCoreWait(bool) {}
 
-	virtual bool GpuStep() { return false; }
-	virtual void SendGPUStart() {}
-	virtual void SendGPUWait(u32 cmd, u32 addr, void* data) {}
-	virtual void SetGPUStep(bool value, int flag = 0, int data = 0) {}
-	virtual void NextGPUStep() {}
+	// While debugging is active, it's perfectly fine for these to block.
+	virtual bool GPUDebuggingActive() { return false; }
+	virtual void GPUNotifyCommand(u32 pc) {}
+	virtual void GPUNotifyDisplay(u32 framebuf, u32 stride, int format) {}
+	virtual void GPUNotifyDraw() {}
+	virtual void GPUNotifyTextureAttachment(u32 addr) {}
+
+	virtual bool CanCreateShortcut() {return false;}
+	virtual bool CreateDesktopShortcut(std::string argumentPath, std::string title) {return false;}
+
+	virtual void NotifyUserMessage(const std::string &message, float duration = 1.0f, u32 color = 0x00FFFFFF, const char *id = nullptr) {}
 
 	// Used for headless.
+	virtual bool ShouldSkipUI() { return false; }
 	virtual void SendDebugOutput(const std::string &output) {}
 	virtual void SendDebugScreenshot(const u8 *pixbuf, u32 w, u32 h) {}
 };

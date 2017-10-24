@@ -18,13 +18,13 @@
 
 #pragma once
 
-#include "Common/CommonTypes.h"
+#include "Common/Common.h"
 
 enum PBPSubFile {
 	PBP_PARAM_SFO,
 	PBP_ICON0_PNG,
 	PBP_ICON1_PMF,
-	PBP_UNKNOWN_PNG,  // PIC0?
+	PBP_PIC0_PNG,
 	PBP_PIC1_PNG,
 	PBP_SND0_AT3,
 	PBP_EXECUTABLE_PSP,
@@ -33,19 +33,21 @@ enum PBPSubFile {
 
 struct PBPHeader {
 	char magic[4];
-	u32 version;
-	u32 offsets[8];
+	u32_le version;
+	u32_le offsets[8];
 };
+
+class FileLoader;
 
 class PBPReader {
 public:
-	PBPReader(const char *filename);
+	PBPReader(FileLoader *fileLoader);
 	~PBPReader();
 
-	bool IsValid() const { return file_ != 0; }
+	bool IsValid() const { return file_ != nullptr; }
+	bool IsELF() const { return file_ == nullptr && isELF_; }
 
-	// Delete the returned buffer with delete [].
-	u8 *GetSubFile(PBPSubFile file, size_t *outSize);
+	bool GetSubFile(PBPSubFile file, std::vector<u8> *out);
 	void GetSubFileAsString(PBPSubFile file, std::string *out);
 
 	size_t GetSubFileSize(PBPSubFile file) {
@@ -58,7 +60,8 @@ public:
 	}
 
 private:
-	FILE *file_;
+	FileLoader *file_;
 	size_t fileSize_;
 	const PBPHeader header_;
+	bool isELF_;
 };

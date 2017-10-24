@@ -17,8 +17,10 @@
 
 #pragma once
 
-#include "../../Globals.h"
+#include <vector>
+#include <string>
 #include "ppge_atlas.h"
+#include "Common/CommonTypes.h"
 
 class PointerWrap;
 
@@ -41,39 +43,109 @@ void __PPGeShutdown();
 void PPGeBegin();
 void PPGeEnd();
 
-
 // If you want to draw using this texture but not go through the PSP GE emulation,
 // jsut call this. Will bind the texture to unit 0.
 void PPGeBindTexture();
 
 enum {
-	PPGE_ALIGN_LEFT = 0,
-	PPGE_ALIGN_RIGHT = 16,
-	PPGE_ALIGN_TOP = 0,
-	PPGE_ALIGN_BOTTOM = 1,
-	PPGE_ALIGN_HCENTER = 4,
-	PPGE_ALIGN_VCENTER = 8,
-	PPGE_ALIGN_VBASELINE = 32,  // text only, possibly not yet working
+	PPGE_ALIGN_LEFT        = 0,
+	PPGE_ALIGN_RIGHT       = 16,
+	PPGE_ALIGN_TOP         = 0,
+	PPGE_ALIGN_BOTTOM      = 1,
+	PPGE_ALIGN_HCENTER     = 4,
+	PPGE_ALIGN_VCENTER     = 8,
+	PPGE_ALIGN_VBASELINE   = 32,  // text only, possibly not yet working
 
-	PPGE_ALIGN_CENTER = PPGE_ALIGN_HCENTER | PPGE_ALIGN_VCENTER,
-	PPGE_ALIGN_TOPLEFT = PPGE_ALIGN_TOP | PPGE_ALIGN_LEFT,
-	PPGE_ALIGN_TOPRIGHT = PPGE_ALIGN_TOP | PPGE_ALIGN_RIGHT,
-	PPGE_ALIGN_BOTTOMLEFT = PPGE_ALIGN_BOTTOM | PPGE_ALIGN_LEFT,
+	PPGE_ALIGN_CENTER      = PPGE_ALIGN_HCENTER | PPGE_ALIGN_VCENTER,
+	PPGE_ALIGN_TOPLEFT     = PPGE_ALIGN_TOP | PPGE_ALIGN_LEFT,
+	PPGE_ALIGN_TOPRIGHT    = PPGE_ALIGN_TOP | PPGE_ALIGN_RIGHT,
+	PPGE_ALIGN_BOTTOMLEFT  = PPGE_ALIGN_BOTTOM | PPGE_ALIGN_LEFT,
 	PPGE_ALIGN_BOTTOMRIGHT = PPGE_ALIGN_BOTTOM | PPGE_ALIGN_RIGHT,
 };
 
+enum {
+	PPGE_ESCAPE_NONE,
+	PPGE_ESCAPE_BACKSLASHED,
+};
+
+enum {
+	PPGE_LINE_NONE         = 0,
+	PPGE_LINE_USE_ELLIPSIS = 1, // use ellipses in too long words
+	PPGE_LINE_WRAP_WORD    = 2,
+	PPGE_LINE_WRAP_CHAR    = 4,
+};
+
+// Get the metrics of the bounding box of the text without changing the buffer or state.
+void PPGeMeasureText(float *w, float *h, int *n, 
+					const char *text, float scale, int WrapType = PPGE_LINE_NONE, int wrapWidth = 0);
+
+// Overwrite the current text lines buffer so it can be drawn later.
+void PPGePrepareText(const char *text, float x, float y, int align, float scale, 
+					int WrapType = PPGE_LINE_NONE, int wrapWidth = 0);
+
+// Get the metrics of the bounding box of the currently stated text.
+void PPGeMeasureCurrentText(float *x, float *y, float *w, float *h, int *n);
+
 // These functions must be called between PPGeBegin and PPGeEnd.
 
-// Draws some text using the one font we have.
-void PPGeDrawText(const char *text, float x, float y, int align, float scale = 1.0f, u32 color = 0xFFFFFFFF);
+// Draw currently buffered text using the state from PPGeGetTextBoundingBox() call.
+// Clears the buffer and state when done.
+void PPGeDrawCurrentText(u32 color = 0xFFFFFFFF);
 
-// Draws a "4-patch" for button-like things that can be resized
+// Draws some text using the one font we have.
+// Clears the text buffer when done.
+void PPGeDrawText(const char *text, float x, float y, int align, float scale = 1.0f, u32 color = 0xFFFFFFFF);
+void PPGeDrawTextWrapped(const char *text, float x, float y, float wrapWidth, int align, float scale = 1.0f, u32 color = 0xFFFFFFFF);
+
+// Draws a "4-patch" for button-like things that can be resized.
 void PPGeDraw4Patch(int atlasImage, float x, float y, float w, float h, u32 color = 0xFFFFFFFF);
 
 // Just blits an image to the screen, multiplied with the color.
 void PPGeDrawImage(int atlasImage, float x, float y, int align, u32 color = 0xFFFFFFFF);
 void PPGeDrawImage(int atlasImage, float x, float y, float w, float h, int align, u32 color = 0xFFFFFFFF);
 void PPGeDrawImage(float x, float y, float w, float h, float u1, float v1, float u2, float v2, int tw, int th, u32 color);
+
+class PPGeImage {
+public:
+	PPGeImage(const std::string &pspFilename);
+	PPGeImage(u32 pngPointer, size_t pngSize);
+	~PPGeImage();
+
+	void SetTexture();
+
+	// Does not normally need to be called (except to force preloading.)
+	bool Load();
+	void Free();
+
+	void DoState(PointerWrap &p);
+
+	// Do not use, only for savestate upgrading.
+	void CompatLoad(u32 texture, int width, int height);
+
+	int Width() const {
+		return width_;
+	}
+
+	int Height() const {
+		return height_;
+	}
+
+private:
+	static void Decimate();
+	static std::vector<PPGeImage *> loadedTextures_;
+
+	std::string filename_;
+
+	// Only valid if filename_.empty().
+	u32 png_;
+	size_t size_;
+
+	u32 texture_;
+	int width_;
+	int height_;
+
+	int lastFrame_;
+};
 
 void PPGeDrawRect(float x1, float y1, float x2, float y2, u32 color);
 

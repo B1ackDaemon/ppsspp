@@ -1,6 +1,7 @@
-#include <windows.h>
+#include "Common/CommonWindows.h"
 #include <vector>
-#include "DialogManager.h"
+#include <algorithm>
+#include "Windows/W32Util/DialogManager.h"
 
 
 Dialog::Dialog(LPCSTR res, HINSTANCE _hInstance, HWND _hParent) 
@@ -8,17 +9,19 @@ Dialog::Dialog(LPCSTR res, HINSTANCE _hInstance, HWND _hParent)
 	m_hInstance = _hInstance;
 	m_hParent = _hParent;
 	m_hResource=res;
+	m_bValid = true;
 	Create();
 }
 
 Dialog::~Dialog()
 {
+	m_bValid = false;
 	Destroy();
 }
 
 void Dialog::Create()
 {
-	m_hDlg = CreateDialogParam(m_hInstance, (LPCSTR)m_hResource, m_hParent, DlgProcStatic, (LPARAM)this);
+	m_hDlg = CreateDialogParam(m_hInstance, (LPCWSTR)m_hResource, m_hParent, DlgProcStatic, (LPARAM)this);
 	SetWindowLongPtr(m_hDlg, GWLP_USERDATA, (LONG_PTR)this);
 }
 
@@ -38,7 +41,7 @@ void Dialog::Show(bool _bShow)
 INT_PTR Dialog::DlgProcStatic(HWND hdlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	Dialog *dis = (Dialog*)GetWindowLongPtr(hdlg, GWLP_USERDATA);
-	if (dis)
+	if (dis && dis->m_bValid)
 		return dis->DlgProc(message,wParam,lParam);
 	else
 	{
@@ -66,13 +69,17 @@ void DialogManager::AddDlg(Dialog *dialog)
 	dialogs.push_back(dialog);
 }
 
+void DialogManager::RemoveDlg(Dialog *dialog)
+{
+	dialogs.erase(std::remove(dialogs.begin(), dialogs.end(), dialog), dialogs.end());
+}
+
 
 bool DialogManager::IsDialogMessage(LPMSG message)
 {
 	WindowList::iterator iter;
-	for (iter=dialogs.begin(); iter!=dialogs.end(); iter++)
-	{
-		if (::IsDialogMessage((*iter)->GetDlgHandle(),message))
+	for (iter = dialogs.begin(); iter != dialogs.end(); iter++) {
+		if (::IsDialogMessage((*iter)->GetDlgHandle(), message))
 			return true;
 	}
 	return false;

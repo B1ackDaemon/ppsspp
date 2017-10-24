@@ -4,29 +4,73 @@
 #include <windowsx.h>
 #include "..\resource.h"
 
-#include "../../Core/Debugger/SymbolMap.h"
+#include "util/text/utf8.h"
+
+#include "Core/Debugger/SymbolMap.h"
+#include "Core/MIPS/MIPSDebugInterface.h" //	BAD
+
 #include "Debugger_MemoryDlg.h"
-
 #include "CtrlMemView.h"
+#include "DebuggerShared.h"
 
-#include "../../Core/MIPS/MIPSDebugInterface.h" //	BAD
 
 RECT CMemoryDlg::slRect;
 
+FAR WNDPROC DefAddressEditProc;
+HWND AddressEditParentHwnd = 0;
+
+LRESULT CALLBACK AddressEditProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	switch(message)
+	{
+	case WM_KEYDOWN:
+		if( wParam == VK_RETURN )
+		{
+			if (AddressEditParentHwnd != 0)
+				SendMessage(AddressEditParentHwnd,WM_DEB_GOTOADDRESSEDIT,0,0);
+			return 0;
+		}
+		break;
+	case WM_KEYUP:
+		if( wParam == VK_RETURN ) return 0;
+		break;
+	case WM_CHAR:
+		if( wParam == VK_RETURN ) return 0;
+		break;
+	case WM_GETDLGCODE:
+		if (lParam && ((MSG*)lParam)->message == WM_KEYDOWN)
+		{
+			if (wParam == VK_RETURN) return DLGC_WANTMESSAGE;
+		}
+		break;
+	};
+
+	return (LRESULT)CallWindowProc((WNDPROC)DefAddressEditProc,hDlg,message,wParam,lParam);
+}
+
+
 CMemoryDlg::CMemoryDlg(HINSTANCE _hInstance, HWND _hParent, DebugInterface *_cpu) : Dialog((LPCSTR)IDD_MEMORY, _hInstance,_hParent)
 {
-  cpu = _cpu;
-	TCHAR temp[256];
-	sprintf(temp,"Memory Viewer - %s",cpu->GetName());
+	cpu = _cpu;
+	wchar_t temp[256];
+	wsprintf(temp,L"Memory Viewer - %S",cpu->GetName());
 	SetWindowText(m_hDlg,temp);
+
 	ShowWindow(m_hDlg,SW_HIDE);
 	CtrlMemView *ptr = CtrlMemView::getFrom(GetDlgItem(m_hDlg,IDC_MEMVIEW));
-  ptr->setDebugger(_cpu);
+	ptr->setDebugger(_cpu);
 
-  Button_SetCheck(GetDlgItem(m_hDlg,IDC_RAM), TRUE);
+	Button_SetCheck(GetDlgItem(m_hDlg,IDC_RAM), TRUE);
 	Button_SetCheck(GetDlgItem(m_hDlg,IDC_MODESYMBOLS), TRUE);
 
 	GetWindowRect(GetDlgItem(m_hDlg,IDC_SYMBOLS),&slRect);
+
+	// subclass the edit box
+	HWND editWnd = GetDlgItem(m_hDlg,IDC_ADDRESS);
+	DefAddressEditProc = (WNDPROC)GetWindowLongPtr(editWnd,GWLP_WNDPROC);
+	SetWindowLongPtr(editWnd,GWLP_WNDPROC,(LONG_PTR)AddressEditProc); 
+	AddressEditParentHwnd = m_hDlg;
+
 	Size();
 }
 
@@ -50,13 +94,14 @@ void CMemoryDlg::NotifyMapLoaded()
 	if (m_hDlg)
 	{
 		HWND list = GetDlgItem(m_hDlg,IDC_SYMBOLS);
-		symbolMap.FillSymbolListBox(list,ST_DATA);	
+		g_symbolMap->FillSymbolListBox(list,ST_DATA);	
 		HWND lb = GetDlgItem(m_hDlg,IDC_REGIONS);
 		int sel = ComboBox_GetCurSel(lb);
 		ComboBox_ResetContent(lb);
     /*
 		for (int i = 0; i < cpu->getMemMap()->numRegions; i++)
 		{
+			// TODO: wchar_t
 			int n = ComboBox_AddString(lb,cpu->getMemMap()->regions[i].name);
 			ComboBox_SetItemData(lb,n,cpu->getMemMap()->regions[i].start);
 		}*/
@@ -80,7 +125,6 @@ BOOL CMemoryDlg::DlgProc(UINT message, WPARAM wParam, LPARAM lParam)
 				switch (HIWORD(wParam)) 
 				{ 
 				case LBN_DBLCLK:
-				case LBN_SELCHANGE: 
 					{
 						HWND lb = GetDlgItem(m_hDlg,LOWORD(wParam));
 						int n = ComboBox_GetCurSel(lb);
@@ -97,7 +141,6 @@ BOOL CMemoryDlg::DlgProc(UINT message, WPARAM wParam, LPARAM lParam)
 				switch (HIWORD(wParam)) 
 				{ 
 				case LBN_DBLCLK:
-				case LBN_SELCHANGE: 
 					{
 
 						HWND lb = GetDlgItem(m_hDlg,LOWORD(wParam));
@@ -110,38 +153,33 @@ BOOL CMemoryDlg::DlgProc(UINT message, WPARAM wParam, LPARAM lParam)
 					}
 					break;
 				};
-				break;		
-			case IDC_ADDRESS:
-				{
-					switch (HIWORD(wParam))
-					{
-					case EN_CHANGE:
-						{
-
-							char temp[256];
-							u32 addr;
-							GetWindowText(GetDlgItem(m_hDlg,IDC_ADDRESS),temp,255);
-							sscanf(temp,"%08x",&addr);
-							mv->gotoAddr(addr & ~3);
-						}
-						break;
-					default:
-						break;
-					}
-				}
-				break;
-			case IDC_MODENORMAL:
-				mv->setMode(MV_NORMAL);
-				break;
-			case IDC_MODESYMBOLS:
-				mv->setMode(MV_SYMBOLS);
 				break;
 			}
 		}
 		break;
-	case WM_USER+1:
+	case WM_DEB_MAPLOADED:
 		NotifyMapLoaded();
 		break;
+	case WM_DEB_GOTOADDRESSEDIT:
+	{
+		CtrlMemView *mv = CtrlMemView::getFrom(GetDlgItem(m_hDlg,IDC_MEMVIEW));
+		wchar_t temp[256];
+		u32 addr;
+		GetWindowText(GetDlgItem(m_hDlg,IDC_ADDRESS),temp,255);
+
+		if (parseExpression(ConvertWStringToUTF8(temp).c_str(),cpu,addr) == false) {
+			displayExpressionError(m_hDlg);
+		} else {
+			mv->gotoAddr(addr);
+			SetFocus(GetDlgItem(m_hDlg,IDC_MEMVIEW));
+		}
+		break;
+	}
+
+	case WM_DEB_UPDATE:
+		Update();
+		return TRUE;
+
 	case WM_INITDIALOG:
 		{
 			return TRUE;
@@ -150,7 +188,6 @@ BOOL CMemoryDlg::DlgProc(UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_SIZE:
 		Size();
 		break;
-		
 	case WM_CLOSE:
 		Show(false);
 		break;
@@ -163,7 +200,8 @@ void CMemoryDlg::Goto(u32 addr)
 {
 	Show(true);
 	CtrlMemView *mv = CtrlMemView::getFrom(GetDlgItem(CMemoryDlg::m_hDlg,IDC_MEMVIEW));
-	mv->gotoAddr(addr & ~3);
+	mv->gotoAddr(addr);
+	SetFocus(GetDlgItem(CMemoryDlg::m_hDlg,IDC_MEMVIEW));
 }
 
 

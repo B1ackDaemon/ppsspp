@@ -1,12 +1,11 @@
-#include <cstring>
+#include <string.h>
 
 extern "C"
 {
 #include "ext/libkirk/kirk_engine.h"
 }
-
-#include "../../Globals.h"
-#include "PrxDecrypter.h"
+#include "Common/Common.h"
+#include "Core/ELF/PrxDecrypter.h"
 
 #define ROUNDUP16(x)  (((x)+15)&~15)
 
@@ -134,9 +133,6 @@ static const u8 demokeys_280[] = {0x12, 0x99, 0x70, 0x5E, 0x24, 0x07, 0x6C, 0xD0
 static const u8 demokeys_3XX_1[] = {0x47, 0x05, 0xD5, 0xE3, 0x56, 0x1E, 0x81, 0x9B, 0x09, 0x2F, 0x06, 0xDB, 0x6B, 0x12, 0x92, 0xE0};
 static const u8 demokeys_3XX_2[] = {0xF6, 0x62, 0x39, 0x6E, 0x26, 0x22, 0x4D, 0xCA, 0x02, 0x64, 0x16, 0x99, 0x7B, 0x9A, 0xE7, 0xB8};
 static const u8 ebootbin_271_new[] = {0xF4, 0xAE, 0xF4, 0xE1, 0x86, 0xDD, 0xD2, 0x9C, 0x7C, 0xC5, 0x42, 0xA6, 0x95, 0xA0, 0x83, 0x88};
-static const u8 ebootbin_280_new[] = {0xB8, 0x8C, 0x45, 0x8B, 0xB6, 0xE7, 0x6E, 0xB8, 0x51, 0x59, 0xA6, 0x53, 0x7C, 0x5E, 0x86, 0x31};
-static const u8 ebootbin_300_new[] = {0xED, 0x10, 0xE0, 0x36, 0xC4, 0xFE, 0x83, 0xF3, 0x75, 0x70, 0x5E, 0xF6, 0xA4, 0x40, 0x05, 0xF7};
-static const u8 ebootbin_310_new[] = {0x5C, 0x77, 0x0C, 0xBB, 0xB4, 0xC2, 0x4F, 0xA2, 0x7E, 0x3B, 0x4E, 0xB4, 0xB4, 0xC8, 0x70, 0xAF};
 static const u8 gameshare_260_271[] = {0xF9, 0x48, 0x38, 0x0C, 0x96, 0x88, 0xA7, 0x74, 0x4F, 0x65, 0xA0, 0x54, 0xC2, 0x76, 0xD9, 0xB8};
 static const u8 gameshare_280[] = {0x2D, 0x86, 0x77, 0x3A, 0x56, 0xA4, 0x4F, 0xDD, 0x3C, 0x16, 0x71, 0x93, 0xAA, 0x8E, 0x11, 0x43};
 static const u8 gameshare_300[] = {0x78, 0x1A, 0xD2, 0x87, 0x24, 0xBD, 0xA2, 0x96, 0x18, 0x3F, 0x89, 0x36, 0x72, 0x90, 0x92, 0x85};
@@ -205,6 +201,13 @@ static const u32 g_keyEBOOT2xx[] = {
 		0xE6A97804, 0x2EEE02FC, 0x61DF8A3D, 0xDD310564, 0x9697E149, 0xC2453F3B,
 		0xF91D8456, 0x39DA6BC8, 0xB3E5FEF5, 0x89C593A3, 0xFB5C8ABC, 0x6C0B7212,
 		0xE10DD3CB, 0x98D0B2A8, 0x5FD61847, 0xF0DC2357, 0x7701166A, 0x0F5C3B68};
+static const u32 g_demokeys_280[] = {
+                0x2A5282B4, 0x8706DDA5, 0x4C88EC1C, 0xD504708E, 0x72634DD2, 0xDD2E2F60,
+                0xE3D5FDB5, 0xE050637D, 0x295C69AC, 0x7B61F57D, 0x594412B0, 0x13D925CE,
+                0x2A6BE8DD, 0xBC9594E6, 0x1F4A8A39, 0xC56B5909, 0x52CFB2F7, 0x03EE089F,
+                0x5CA57A21, 0xDB64090F, 0x5E9A56F3, 0x13C56633, 0xD9C48D1D, 0xCDA05972,
+                0xD09E13B2, 0x7DEDD3DF, 0x364387BB, 0xCB207488, 0xBEC14B3F, 0x7C9C0D11,
+                0x9916ED40, 0x65909519, 0xC55BB1B3, 0xE997E084, 0xB483438B, 0xB8A2D255};		
 static const u32 g_keyUPDATER[] = {
 		0xA5603CBF, 0xD7482441, 0xF65764CC, 0x1F90060B, 0x4EA73E45, 0xE551D192,
 		0xE7B75D8A, 0x465A506E, 0x40FB1022, 0x2C273350, 0x8096DA44, 0x9947198E,
@@ -281,6 +284,7 @@ static const TAG_INFO g_tagInfo[] =
 	{ 0x07000000, g_key_INDEXDAT1xx, 0x4A },
 	{ 0x08000000, g_keyEBOOT1xx, 0x4B },
 	{ 0xC0CB167C, g_keyEBOOT2xx, 0x5D, 0x5D },
+	{ 0x7F24BDCD, g_demokeys_280, 0x60, 0x60 },
 	{ 0x0B000000, g_keyUPDATER, 0x4E },
 	{ 0x0C000000, g_keyDEMOS27X, 0x4F },
 	{ 0x0F000000, g_keyMEIMG250, 0x52 },
@@ -297,7 +301,7 @@ bool HasKey(int key)
 		case 0x02: case 0x03: case 0x04: case 0x05: case 0x07: case 0x0C: case 0x0D: case 0x0E: case 0x0F:
 		case 0x10: case 0x11: case 0x12:
 		case 0x38: case 0x39: case 0x3A: case 0x44: case 0x4B:
-		case 0x53: case 0x57: case 0x5D:
+		case 0x53: case 0x57: case 0x5D: case 0x60:
 		case 0x63: case 0x64:
 			return true;
 		default:
@@ -320,7 +324,7 @@ static void ExtraV2Mangle(u8* buffer1, u8 codeExtra)
 
 	memcpy(buffer2+0x14, buffer1, 0xA0);
 
-	u32* pl2 = (u32*)buffer2;
+	u32_le* pl2 = (u32_le*)buffer2;
 	pl2[0] = 5;
 	pl2[1] = pl2[2] = 0;
 	pl2[3] = codeExtra;
@@ -331,7 +335,7 @@ static void ExtraV2Mangle(u8* buffer1, u8 codeExtra)
 	memcpy(buffer1, buffer2, 0xA0);
 }
 
-static int Scramble(u32 *buf, u32 size, u32 code)
+static int Scramble(u32_le *buf, u32 size, u32 code)
 {
 	buf[0] = 5;
 	buf[1] = buf[2] = 0;
@@ -348,7 +352,8 @@ static int Scramble(u32 *buf, u32 size, u32 code)
 
 static int DecryptPRX1(const u8* pbIn, u8* pbOut, int cbTotal, u32 tag)
 {
-	int i, retsize;
+	int i;
+	s32_le retsize;
 	u8 bD0[0x80], b80[0x50], b00[0x80], bB0[0x20];
 
 	const TAG_INFO *pti = GetTagInfo(tag);
@@ -362,7 +367,7 @@ static int DecryptPRX1(const u8* pbIn, u8* pbOut, int cbTotal, u32 tag)
 		return MISSING_KEY;
 	}
 
-	retsize = *(u32*)&pbIn[0xB0];
+	retsize = *(s32_le*)&pbIn[0xB0];
 
 	for (i = 0; i < 0x14; i++)
 	{
@@ -378,7 +383,7 @@ static int DecryptPRX1(const u8* pbIn, u8* pbOut, int cbTotal, u32 tag)
 	memcpy(key, pti->key, 0x90);
 	if (i == 0x14)
 	{
-		Scramble((u32 *)key, 0x90, pti->code);
+		Scramble((u32_le *)key, 0x90, pti->code);
 	}
 
 	// build conversion into pbOut
@@ -395,7 +400,7 @@ static int DecryptPRX1(const u8* pbIn, u8* pbOut, int cbTotal, u32 tag)
 	memset(pbOut, 0x55, 0x40); // first $40 bytes ignored
 
 	// step3 demangle in place
-	u32* pl = (u32*)(pbOut+0x2C);
+	u32_le* pl = (u32_le*)(pbOut+0x2C);
 	pl[0] = 5; // number of ulongs in the header
 	pl[1] = pl[2] = 0;
 	pl[3] = pti->code; // initial seed for PRX
@@ -413,7 +418,11 @@ static int DecryptPRX1(const u8* pbIn, u8* pbOut, int cbTotal, u32 tag)
 	int ret;
 	int iXOR;
 	for (iXOR = 0; iXOR < 0x70; iXOR++)
+#ifdef COMMON_BIG_ENDIAN
+		pbOut[0x40+iXOR] = pbOut[0x40+iXOR] ^ key[(0x14+iXOR) ^3];
+#else
 		pbOut[0x40+iXOR] = pbOut[0x40+iXOR] ^ key[0x14+iXOR];
+#endif
 
 	ret = sceUtilsBufferCopyWithRange(pbOut+0x2C, 20+0x70, pbOut+0x2C, 20+0x70, 7);
 	if (ret != 0)
@@ -422,7 +431,11 @@ static int DecryptPRX1(const u8* pbIn, u8* pbOut, int cbTotal, u32 tag)
 	}
 
 	for (iXOR = 0x6F; iXOR >= 0; iXOR--)
+#ifdef COMMON_BIG_ENDIAN
+		pbOut[0x40+iXOR] = pbOut[0x2C+iXOR] ^ key[(0x20+iXOR) ^ 3];
+#else
 		pbOut[0x40+iXOR] = pbOut[0x2C+iXOR] ^ key[0x20+iXOR];
+#endif
 
 	memset(pbOut+0x80, 0, 0x30); // $40 bytes kept, clean up
 	pbOut[0xA0] = 1;
@@ -535,30 +548,30 @@ static const TAG_INFO2 g_tagInfo2[] =
 	{ 0x2FD30BF0, key_2FD30BF0, 0x47 },
 	{ 0x2FD311F0, key_2FD311F0, 0x47 },
 	{ 0x2FD312F0, key_2FD312F0, 0x47 },
-	{ 0xD91605F0, key_D91605F0, 0x5D },
-	{ 0xD91606F0, key_D91606F0, 0x5D },
-	{ 0xD91608F0, key_D91608F0, 0x5D },
-	{ 0xD91609F0, key_D91609F0, 0x5D },
-	{ 0xD9160AF0, key_D9160AF0, 0x5D },
-	{ 0xD9160BF0, key_D9160BF0, 0x5D },
-	{ 0xD91611F0, key_D91611F0, 0x5D },
-	{ 0xD91612F0, key_D91612F0, 0x5D },
-	{ 0xD91613F0, key_D91613F0, 0x5D },
-	{ 0xD91614F0, key_D91614F0, 0x5D },
-	{ 0xD91615F0, key_D91615F0, 0x5D },
-	{ 0xD91616F0, key_D91616F0, 0x5D },
-	{ 0xD91617F0, key_D91617F0, 0x5D },
-	{ 0xD91618F0, key_D91618F0, 0x5D },
-	{ 0xD91619F0, key_D91619F0, 0x5D },
-	{ 0xD9161AF0, key_D9161AF0, 0x5D },
-	{ 0xD91620F0, key_D91620F0, 0x5D },
-	{ 0xD91621F0, key_D91621F0, 0x5D },
-	{ 0xD91622F0, key_D91622F0, 0x5D },
-	{ 0xD91623F0, key_D91623F0, 0x5D },
-	{ 0xD91624F0, key_D91624F0, 0x5D },
-	{ 0xD91628F0, key_D91628F0, 0x5D },
-	{ 0xD91680F0, key_D91680F0, 0x5D },
-	{ 0xD91681F0, key_D91681F0, 0x5D },
+	{ 0xD91605F0, key_D91605F0, 0x5D, 2},
+	{ 0xD91606F0, key_D91606F0, 0x5D, 2},
+	{ 0xD91608F0, key_D91608F0, 0x5D, 2},
+	{ 0xD91609F0, key_D91609F0, 0x5D, 2},
+	{ 0xD9160AF0, key_D9160AF0, 0x5D, 2},
+	{ 0xD9160BF0, key_D9160BF0, 0x5D, 2},
+	{ 0xD91611F0, key_D91611F0, 0x5D, 2},
+	{ 0xD91612F0, key_D91612F0, 0x5D, 2},
+	{ 0xD91613F0, key_D91613F0, 0x5D, 2},
+	{ 0xD91614F0, key_D91614F0, 0x5D, 2},
+	{ 0xD91615F0, key_D91615F0, 0x5D, 2},
+	{ 0xD91616F0, key_D91616F0, 0x5D, 2},
+	{ 0xD91617F0, key_D91617F0, 0x5D, 2},
+	{ 0xD91618F0, key_D91618F0, 0x5D, 2},
+	{ 0xD91619F0, key_D91619F0, 0x5D, 2},
+	{ 0xD9161AF0, key_D9161AF0, 0x5D, 2},
+	{ 0xD91620F0, key_D91620F0, 0x5D, 2},
+	{ 0xD91621F0, key_D91621F0, 0x5D, 2},
+	{ 0xD91622F0, key_D91622F0, 0x5D, 2},
+	{ 0xD91623F0, key_D91623F0, 0x5D, 2},
+	{ 0xD91624F0, key_D91624F0, 0x5D, 2},
+	{ 0xD91628F0, key_D91628F0, 0x5D, 2},
+	{ 0xD91680F0, key_D91680F0, 0x5D, 6},
+	{ 0xD91681F0, key_D91681F0, 0x5D, 6},
 	{ 0xD82310F0, keys02G_E, 0x51 },
 	{ 0xD8231EF0, keys03G_E, 0x51 },
 	{ 0xD82328F0, keys05G_E, 0x51 },
@@ -571,10 +584,7 @@ static const TAG_INFO2 g_tagInfo2[] =
 	{ 0xADF305F0, demokeys_280, 0x60 },
 	{ 0xADF306F0, demokeys_3XX_1, 0x60 },
 	{ 0xADF308F0, demokeys_3XX_2, 0x60 },
-	{ 0x8004FD03, ebootbin_271_new, 0x5D },
-	{ 0xD91605F0, ebootbin_280_new, 0x5D },
-	{ 0xD91606F0, ebootbin_300_new, 0x5D },
-	{ 0xD91608F0, ebootbin_310_new, 0x5D },
+	{ 0x8004FD03, ebootbin_271_new, 0x5D, 2 },
 	{ 0x0A35EA03, gameshare_260_271, 0x5E },
 	{ 0x7B0505F0, gameshare_280, 0x5E },
 	{ 0x7B0506F0, gameshare_300, 0x5E },
@@ -615,7 +625,11 @@ static int DecryptPRX2(const u8 *inbuf, u8 *outbuf, u32 size, u32 tag)
 		return MISSING_KEY;
 	}
 
-	int retsize = *(const int *)&inbuf[0xB0];
+	// only type2 and type6 can be process by this code.
+	if(pti->type!=2 && pti->type!=6)
+		return -12;
+
+	s32_le retsize = *(const s32_le *)&inbuf[0xB0];
 	u8 tmp1[0x150] = {0};
 	u8 tmp2[ROUNDUP16(0x90+0x14)] = {0};
 	u8 tmp3[ROUNDUP16(0x90+0x14)] = {0};
@@ -636,20 +650,17 @@ static int DecryptPRX2(const u8 *inbuf, u8 *outbuf, u32 size, u32 tag)
 
 	memcpy(tmp1, outbuf, 0x150);
 
-	int i, j;
+	int i;
 	u8 *p = tmp2 + 0x14;
 
 	// Writes 0x90 bytes to tmp2 + 0x14.
 	for (i = 0; i < 9; i++)
 	{
-		for (j = 0; j < 0x10; j++)
-		{
-			p[(i << 4) + j] = pti->key[j];
-		}
+		memcpy(p+(i<<4), pti->key, 0x10);
 		p[(i << 4)] = i;   // really? this is very odd
 	}
 
-	if (Scramble((u32 *)tmp2, 0x90, pti->code) < 0)
+	if (Scramble((u32_le  *)tmp2, 0x90, pti->code) < 0)
 	{
 		return -5;
 	}
@@ -664,7 +675,7 @@ static int DecryptPRX2(const u8 *inbuf, u8 *outbuf, u32 size, u32 tag)
 
 	memcpy(tmp3+0x14, outbuf+0x5C, 0x60);
 
-	if (Scramble((u32 *)tmp3, 0x60, pti->code) < 0)
+	if (Scramble((u32_le  *)tmp3, 0x60, pti->code) < 0)
 	{
 		return -6;
 	}
@@ -673,7 +684,7 @@ static int DecryptPRX2(const u8 *inbuf, u8 *outbuf, u32 size, u32 tag)
 	memcpy(tmp3, outbuf+0x6C, 0x14);
 	memcpy(outbuf+0x70, outbuf+0x5C, 0x10);
 
-	if(pti->type == 3)
+	if(pti->type == 6)
 	{
 		memcpy(tmp4, outbuf+0x3C, 0x20);
 		memcpy(outbuf+0x50, tmp4, 0x20);
@@ -682,7 +693,7 @@ static int DecryptPRX2(const u8 *inbuf, u8 *outbuf, u32 size, u32 tag)
 		memset(outbuf+0x18, 0, 0x58);
 
 	memcpy(outbuf+0x04, outbuf, 0x04);
-	*((u32 *)outbuf) = 0x014C;
+	*((u32_le *)outbuf) = 0x014C;
 	memcpy(outbuf+0x08, tmp2, 0x10);
 
 	/* sha-1 */
@@ -697,37 +708,36 @@ static int DecryptPRX2(const u8 *inbuf, u8 *outbuf, u32 size, u32 tag)
 		return -8;
 	}
 
-	for (int iXOR = 0; iXOR < 0x40; iXOR++)
+	for (i=0; i<0x40; i++)
 	{
-		tmp3[iXOR+0x14] = outbuf[iXOR+0x80] ^ tmp2[iXOR+0x10];
+		tmp3[i+0x14] = outbuf[i+0x80] ^ tmp2[i+0x10];
 	}
 
-	if (Scramble((u32 *)tmp3, 0x40, pti->code) != 0)
+	if (Scramble((u32_le  *)tmp3, 0x40, pti->code) != 0)
 	{
 		return -9;
 	}
 
-	for (int iXOR = 0x3F; iXOR >= 0; iXOR--)
+	for (i=0; i<0x40; i++)
 	{
-		outbuf[iXOR+0x40] = tmp3[iXOR] ^ tmp2[iXOR+0x50]; // uns 8
+		outbuf[i+0x40] = tmp3[i] ^ tmp2[i+0x50];
 	}
 
-	if (pti->type == 3)
+	if (pti->type == 6)
 	{
 		memcpy(outbuf+0x80, tmp4, 0x20);
 		memset(outbuf+0xA0, 0, 0x10);
-		*(u32*)&outbuf[0xA4] = 1;
-		*(u32*)&outbuf[0xA0] = 1;
+		*(u32_le*)&outbuf[0xA4] = 1;
+		*(u32_le*)&outbuf[0xA0] = 1;
 	}
 	else
 	{
 		memset(outbuf+0x80, 0, 0x30);
-		*(u32*)&outbuf[0xA0] = 1;
+		*(u32_le*)&outbuf[0xA0] = 1;
 	}
 
 	memcpy(outbuf+0xB0, outbuf+0xC0, 0x10);
 	memset(outbuf+0xC0, 0, 0x10);
-	memcpy(outbuf+0xD0, outbuf+0xD0, 0x80);
 
 	// The real decryption
 	if (sceUtilsBufferCopyWithRange(outbuf, size, outbuf + 0x40, size - 0x40, 0x1) != 0)
@@ -747,7 +757,7 @@ static int DecryptPRX2(const u8 *inbuf, u8 *outbuf, u32 size, u32 tag)
 int pspDecryptPRX(const u8 *inbuf, u8 *outbuf, u32 size)
 {
 	kirk_init();
-	int retsize = DecryptPRX1(inbuf, outbuf, size, *(u32 *)&inbuf[0xD0]);
+	int retsize = DecryptPRX1(inbuf, outbuf, size, (u32)*(u32_le *)&inbuf[0xD0]);
 	if (retsize == MISSING_KEY)
 	{
 		return MISSING_KEY;
@@ -755,7 +765,7 @@ int pspDecryptPRX(const u8 *inbuf, u8 *outbuf, u32 size)
 
 	if (retsize <= 0)
 	{
-		retsize = DecryptPRX2(inbuf, outbuf, size, *(u32 *)&inbuf[0xD0]);
+		retsize = DecryptPRX2(inbuf, outbuf, size, (u32)*(u32_le *)&inbuf[0xD0]);
 	}
 
 	return retsize;

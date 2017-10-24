@@ -19,32 +19,36 @@
 
 #include "../../Core/Debugger/DebugInterface.h"
 
-enum MemViewMode
-{
-	MV_NORMAL,
-	MV_SYMBOLS,
-	MV_MAX
-};
-
 class CtrlMemView
 {
 	HWND wnd;
 	HFONT font;
+	HFONT underlineFont;
 	RECT rect;
 
-	int curAddress;
-	int align;
-	int alignMul;
+	unsigned int curAddress;
+	unsigned int windowStart;
 	int rowHeight;
+	int rowSize;
 
-	int selection;
-	int oldSelection;
-	bool selectionChanged;
-	bool selecting;
+	int addressStart;
+	int charWidth;
+	int hexStart;
+	int asciiStart;
+	bool asciiSelected;
+	int selectedNibble;
+
+	int visibleRows;
+	
+	std::string searchQuery;
+	int matchAddress;
+	bool searching;
+
 	bool hasFocus;
-	static TCHAR szClassName[];
+	static wchar_t szClassName[];
 	DebugInterface *debugger;
-	MemViewMode mode;
+	void updateStatusBarText();
+	void search(bool continueSearch);
 public:
 	CtrlMemView(HWND _wnd);
 	~CtrlMemView();
@@ -56,8 +60,6 @@ public:
 	void setDebugger(DebugInterface *deb)
 	{
 		debugger=deb;
-		if (debugger)
-			align=debugger->getInstructionSize(0);
 	}
 	DebugInterface *getDebugger()
 	{
@@ -67,38 +69,14 @@ public:
 	void onPaint(WPARAM wParam, LPARAM lParam);
 	void onVScroll(WPARAM wParam, LPARAM lParam);
 	void onKeyDown(WPARAM wParam, LPARAM lParam);
+	void onChar(WPARAM wParam, LPARAM lParam);
 	void onMouseDown(WPARAM wParam, LPARAM lParam, int button);
 	void onMouseUp(WPARAM wParam, LPARAM lParam, int button);
 	void onMouseMove(WPARAM wParam, LPARAM lParam, int button);
 	void redraw();
 
-	void setMode(MemViewMode m)
-	{
-		mode=m;
-		switch(mode) {
-		case MV_NORMAL:
-			alignMul=4;
-			break;
-		case MV_SYMBOLS:
-			alignMul=1;
-			break;
-		default:
-			break;
-		}
-		redraw();
-	}
-	void setAlign(int l)
-	{
-		align=l;
-	}
-	int yToAddress(int y);
-	void gotoAddr(unsigned int addr)
-	{
-		curAddress=addr&(~(align-1));
-		redraw();
-	}
-	unsigned int getSelection()
-	{
-		return curAddress;
-	}
+	void gotoPoint(int x, int y);
+	void gotoAddr(unsigned int addr);
+	void scrollWindow(int lines);
+	void scrollCursor(int bytes);
 };

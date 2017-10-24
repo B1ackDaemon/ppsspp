@@ -15,50 +15,53 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-
 #pragma once
 
 #include <string>
 
-enum CPUCore {
-	CPU_INTERPRETER,
-	CPU_JIT,
-};
+#include "Core/Compatibility.h"
+#include "Core/Config.h"
 
 enum GPUCore {
-	GPU_NULL,
-	GPU_GLES,
-	GPU_SOFTWARE,
+	GPUCORE_NULL,
+	GPUCORE_GLES,
+	GPUCORE_SOFTWARE,
+	GPUCORE_DIRECTX9,
+	GPUCORE_DIRECTX11,
+	GPUCORE_VULKAN,
 };
 
-struct CoreParameter
-{
-	CoreParameter() : collectEmuLog(0), unthrottle(false) {}
-	// 0 = Interpreter
-	// 1 = Jit
-	// 2 = JitIL
+class FileLoader;
+
+class GraphicsContext;
+namespace Draw {
+	class DrawContext;
+}
+
+// PSP_CoreParameter()
+struct CoreParameter {
+	CoreParameter() : thin3d(nullptr), collectEmuLog(0), unthrottle(false), fpsLimit(0), updateRecent(true), freezeNext(false), frozen(false), mountIsoLoader(nullptr) {}
+
 	CPUCore cpuCore;
 	GPUCore gpuCore;
+
+	GraphicsContext *graphicsContext;  // TODO: Find a better place.
+	Draw::DrawContext *thin3d;
 	bool enableSound;  // there aren't multiple sound cores.
 
 	std::string fileToStart;
-	std::string mountIso;  // If non-empty, and fileToStart is an ELF or PBP, will mount this ISO in the background.
+	std::string mountIso;  // If non-empty, and fileToStart is an ELF or PBP, will mount this ISO in the background to umd1:.
+	std::string mountRoot;  // If non-empty, and fileToStart is an ELF or PBP, mount this as host0: / umd0:.
+	std::string errorString;
 
 	bool startPaused;
-	bool disableG3Dlog;
-	bool enableDebugging;  // enables breakpoints and other time-consuming debugger features
 	bool printfEmuLog;  // writes "emulator:" logging to stdout
 	std::string *collectEmuLog;
 	bool headLess;   // Try to avoid messageboxes etc
-	bool useMediaEngine;
 
 	// Internal PSP resolution
 	int renderWidth;
 	int renderHeight;
-
-	// Virtual (dpi-adjusted) output resolution
-	int outputWidth;
-	int outputHeight;
 
 	// Actual pixel output resolution (for use by glViewport and the like)
 	int pixelWidth;
@@ -66,4 +69,15 @@ struct CoreParameter
 
 	// Can be modified at runtime.
 	bool unthrottle;
+	int fpsLimit;
+
+	bool updateRecent;
+
+	// Freeze-frame. For nvidia perfhud profiling. Developers only.
+	bool freezeNext;
+	bool frozen;
+
+	FileLoader *mountIsoLoader;
+
+	Compatibility compat;
 };

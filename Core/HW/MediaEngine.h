@@ -19,79 +19,125 @@
 
 // Simulation of the hardware video/audio decoders.
 // The idea is high level emulation where we simply use FFMPEG.
-// TODO: Actually hook up to ffmpeg.
 
 #pragma once
 
 // An approximation of what the interface will look like. Similar to JPCSP's.
 
-#include "../../Globals.h"
-#include "../HLE/sceMpeg.h"
-#include "ChunkFile.h"
+#include <map>
+#include "Common/CommonTypes.h"
+#include "Core/HLE/sceMpeg.h"
+#include "Core/HW/MpegDemux.h"
+#include "Core/HW/SimpleAudioDec.h"
+
+class PointerWrap;
+class SimpleAudio;
+
+#ifdef USE_FFMPEG
+struct SwsContext;
+struct AVFrame;
+struct AVIOContext;
+struct AVFormatContext;
+struct AVCodecContext;
+#endif
+
+inline s64 getMpegTimeStamp(const u8 *buf) {
+	return (s64)buf[5] | ((s64)buf[4] << 8) | ((s64)buf[3] << 16) | ((s64)buf[2] << 24) 
+		| ((s64)buf[1] << 32) | ((s64)buf[0] << 36);
+}
+
+#ifdef USE_FFMPEG
+bool InitFFmpeg();
+#endif
 
 class MediaEngine
 {
 public:
-	MediaEngine() : fakeMode_(false), readLength_(0), fakeFrameCounter_(0) {}
+	MediaEngine();
+	~MediaEngine();
 
-	void setFakeMode(bool fake) {
-		fakeMode_ = fake;
-	}
+	void closeMedia();
+	bool loadStream(const u8 *buffer, int readSize, int RingbufferSize);
+	bool reloadStream();
+	// open the mpeg context
+	bool openContext(bool keepReadPos = false);
+	void closeContext();
 
-	void init(u32 bufferAddr, u32 mpegStreamSize, u32 mpegOffset) {
-		bufferAddr_ = bufferAddr;
-		mpegStreamSize_ = mpegStreamSize;
-		mpegOffset_ = mpegOffset;
-	}
-	void finish();
+	// Returns number of packets actually added. I guess the buffer might be full.
+	int addStreamData(const u8 *buffer, int addSize);
+	bool seekTo(s64 timestamp, int videoPixelMode);
 
-	void setVideoDim(int w, int h) { videoWidth_ = w; videoHeight_ = h; }
-	void feedPacketData(u32 addr, int size);
+	bool setVideoStream(int streamNum, bool force = false);
+	// TODO: Return false if the stream doesn't exist.
+	bool setAudioStream(int streamNum) { m_audioStream = streamNum; return true; }
 
-	bool readVideoAu(SceMpegAu *au) {
-		if (fakeMode_) {
-			au->pts += videoTimestampStep;
-		}
-		return true;
-	}
-	bool readAudioAu(SceMpegAu *au) {
-		if (fakeMode_) {
+	u8 *getFrameImage();
+	int getRemainSize();
+	int getAudioRemainSize();
 
-		}
-		return true;
-	}
+	bool stepVideo(int videoPixelMode, bool skipFrame = false);
+	int writeVideoImage(u32 bufferPtr, int frameWidth = 512, int videoPixelMode = 3);
+	int writeVideoImageWithRange(u32 bufferPtr, int frameWidth, int videoPixelMode,
+	                             int xpos, int ypos, int width, int height);
+	int getAudioSamples(u32 bufferPtr);
 
-	bool stepVideo() {
-		if (fakeMode_)
-			return true;
-		return true;
-	}
+	s64 getVideoTimeStamp();
+	s64 getAudioTimeStamp();
+	s64 getLastTimeStamp();
 
-	void writeVideoImage(u32 bufferPtr, int frameWidth, int videoPixelMode);
+	bool IsVideoEnd() { return m_isVideoEnd; }
+	bool IsNoAudioData();
+	int VideoWidth() { return m_desWidth; }
+	int VideoHeight() { return m_desHeight; }
 
-	// WTF is this?
-	int readLength() { return readLength_; }
-	void setReadLength(int len) { readLength_ = len; }
-
-	void DoState(PointerWrap &p) {
-		p.Do(fakeMode_);
-		p.Do(bufferAddr_);
-		p.Do(mpegStreamSize_);
-		p.Do(mpegOffset_);
-		p.Do(readLength_);
-		p.Do(videoWidth_);
-		p.Do(videoHeight_);
-		p.Do(fakeFrameCounter_);
-		p.DoMarker("MediaEngine");
-	}
+	void DoState(PointerWrap &p);
 
 private:
-	bool fakeMode_;
-	u32 bufferAddr_;
-	u32 mpegStreamSize_;
-	u32 mpegOffset_;
-	int readLength_;
-	int videoWidth_;
-	int videoHeight_;
-	int fakeFrameCounter_;
+	bool SetupStreams();
+	bool setVideoDim(int width = 0, int height = 0);
+	void updateSwsFormat(int videoPixelMode);
+	int getNextAudioFrame(u8 **buf, int *headerCode1, int *headerCode2);
+
+public:  // TODO: Very little of this below should be public.
+
+	// Video ffmpeg context - not used for audio
+#ifdef USE_FFMPEG
+	AVFormatContext *m_pFormatCtx;
+	std::map<int, AVCodecContext *> m_pCodecCtxs;
+	AVFrame *m_pFrame;
+	AVFrame *m_pFrameRGB;
+	AVIOContext *m_pIOContext;
+	SwsContext *m_sws_ctx;
+#endif
+
+	int m_sws_fmt;
+	u8 *m_buffer;
+	int m_videoStream;
+
+	// Used by the demuxer.
+	int m_audioStream;
+
+	int m_desWidth;
+	int m_desHeight;
+	int m_decodingsize;
+	int m_bufSize;
+	s64 m_videopts;
+	BufferQueue *m_pdata;
+
+	MpegDemux *m_demux;
+	SimpleAudio *m_audioContext;
+	s64 m_audiopts;
+
+	s64 m_firstTimeStamp;
+	s64 m_lastTimeStamp;
+
+	bool m_isVideoEnd;
+
+	int m_ringbuffersize;
+	u8 m_mpegheader[0x10000];  // TODO: Allocate separately
+	int m_mpegheaderReadPos;
+	int m_mpegheaderSize;
+
+	// used for audio type 
+	int m_audioType;
 };

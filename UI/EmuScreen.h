@@ -18,23 +18,77 @@
 #pragma once
 
 #include <string>
+#include <vector>
+#include <list>
 
+#include "input/keycodes.h"
 #include "ui/screen.h"
+#include "ui/ui_screen.h"
+#include "Common/KeyMap.h"
 
-class EmuScreen : public Screen
-{
+struct AxisInput;
+
+class AsyncImageFileView;
+
+class EmuScreen : public UIScreen {
 public:
 	EmuScreen(const std::string &filename);
 	~EmuScreen();
 
-	virtual void update(InputState &input);
-	virtual void render();
-	virtual void deviceLost();
-	virtual void dialogFinished(const Screen *dialog, DialogResult result);
-	virtual void sendMessage(const char *msg, const char *value);
+	void update(InputState &input) override;
+	void render() override;
+	void deviceLost() override;
+	void deviceRestore() override;
+	void dialogFinished(const Screen *dialog, DialogResult result) override;
+	void sendMessage(const char *msg, const char *value) override;
+
+	bool touch(const TouchInput &touch) override;
+	bool key(const KeyInput &key) override;
+	bool axis(const AxisInput &axis) override;
+
+protected:
+	void CreateViews() override;
+	UI::EventReturn OnDevTools(UI::EventParams &params);
 
 private:
+	void bootGame(const std::string &filename);
+	void bootComplete();
+	void processAxis(const AxisInput &axis, int direction);
+
+	void pspKey(int pspKeyCode, int flags);
+	void onVKeyDown(int virtualKeyCode);
+	void onVKeyUp(int virtualKeyCode);
+	void setVKeyAnalogX(int stick, int virtualKeyMin, int virtualKeyMax);
+	void setVKeyAnalogY(int stick, int virtualKeyMin, int virtualKeyMax);
+
+	void releaseButtons();
+
+	void autoLoad();
+	void checkPowerDown();
+
+	bool bootPending_;
+	std::string gamePath_;
+
 	// Something invalid was loaded, don't try to emulate
 	bool invalid_;
+	bool quit_;
 	std::string errorMessage_;
+
+	// If set, pauses at the end of the frame.
+	bool pauseTrigger_;
+
+	// To track mappable virtual keys. We can have as many as we want.
+	bool virtKeys[VIRTKEY_COUNT];
+
+	// In-memory save state used for freezeFrame, which is useful for debugging.
+	std::vector<u8> freezeState_;
+
+	std::string tag_;
+
+	// De-noise mapped axis updates
+	int axisState_[JOYSTICK_AXIS_MAX];
+
+	double saveStatePreviewShownTime_;
+	AsyncImageFileView *saveStatePreview_;
+	int saveStateSlot_;
 };

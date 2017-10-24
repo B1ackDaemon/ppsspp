@@ -15,14 +15,17 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#ifndef _STRINGUTIL_H_
-#define _STRINGUTIL_H_
+#pragma once
 
-#include <iomanip>
 #include <base/stringutil.h>
 
 #include "Common.h"
 
+
+void truncate_cpy(char *dest, size_t destSize, const char *src);
+
+long parseHexLong(std::string s);
+long parseLong(std::string s);
 std::string StringFromFormat(const char* format, ...);
 // Cheap!
 bool CharArrayFromFormatV(char* out, int outsize, const char* format, va_list args);
@@ -36,34 +39,5 @@ inline void CharArrayFromFormat(char (& out)[Count], const char* format, ...)
 	va_end(args);
 }
 
-// Thousand separator. Turns 12345678 into 12,345,678
-template <typename I>
-std::string ThousandSeparate(I value, int spaces = 0)
-{
-	std::ostringstream oss;
-
-// std::locale("") seems to be broken on many platforms
-#if defined _WIN32 || (defined __linux__ && !defined __clang__)
-	oss.imbue(std::locale(""));
-#endif
-	oss << std::setw(spaces) << value;
-
-	return oss.str();
-}
-
-// TODO: kill this
-bool AsciiToHex(const char* _szValue, u32& result);
-
-std::string TabsToSpaces(int tab_size, const std::string &in);
-
 // "C:/Windows/winhelp.exe" to "C:/Windows/", "winhelp", ".exe"
 bool SplitPath(const std::string& full_path, std::string* _pPath, std::string* _pFilename, std::string* _pExtension);
-
-void BuildCompleteFilename(std::string& _CompleteFilename, const std::string& _Path, const std::string& _Filename);
-std::string ReplaceAll(std::string result, const std::string& src, const std::string& dest);
-std::string UriDecode(const std::string & sSrc);
-std::string UriEncode(const std::string & sSrc);
-
-bool StringEndsWith(std::string const &fullString, std::string const &ending);
-
-#endif // _STRINGUTIL_H_

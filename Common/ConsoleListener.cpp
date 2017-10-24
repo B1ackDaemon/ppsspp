@@ -18,39 +18,52 @@
 
 #include <algorithm>  // min
 #include <string> // System: To be able to add strings with "+"
-#include <stdio.h>
 #include <math.h>
 #ifdef _WIN32
-#include <windows.h>
+#include <process.h>
+#include "CommonWindows.h"
 #include <array>
 #else
 #include <stdarg.h>
 #endif
 
+#include "thread/threadutil.h"
+#include "util/text/utf8.h"
 #include "Common.h"
-#include "LogManager.h" // Common
 #include "ConsoleListener.h" // Common
 #include "Atomics.h"
 
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
 const int LOG_PENDING_MAX = 120 * 10000;
 const int LOG_LATENCY_DELAY_MS = 20;
 const int LOG_SHUTDOWN_DELAY_MS = 250;
 const int LOG_MAX_DISPLAY_LINES = 4000;
+
+int ConsoleListener::refCount = 0;
+HANDLE ConsoleListener::hThread = NULL;
+HANDLE ConsoleListener::hTriggerEvent = NULL;
+CRITICAL_SECTION ConsoleListener::criticalSection;
+
+char *ConsoleListener::logPending = NULL;
+volatile u32 ConsoleListener::logPendingReadPos = 0;
+volatile u32 ConsoleListener::logPendingWritePos = 0;
 #endif
 
-ConsoleListener::ConsoleListener()
+ConsoleListener::ConsoleListener() : bHidden(true)
 {
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
 	hConsole = NULL;
 	bUseColor = true;
-
-	hThread = NULL;
-	hTriggerEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-	InitializeCriticalSection(&criticalSection);
-	logPending = NULL;
-	logPendingReadPos = 0;
-	logPendingWritePos = 0;
+	if (hTriggerEvent == NULL) {
+		hTriggerEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+		InitializeCriticalSection(&criticalSection);
+		logPending = new char[LOG_PENDING_MAX];
+	}
+	++refCount;
+#elif defined(ANDROID)
+	bUseColor = false;
+#elif defined(IOS)
+	bUseColor = false;
 #else
 	bUseColor = isatty(fileno(stdout));
 #endif
@@ -59,36 +72,70 @@ ConsoleListener::ConsoleListener()
 ConsoleListener::~ConsoleListener()
 {
 	Close();
+}
 
 #ifdef _WIN32
-	DeleteCriticalSection(&criticalSection);
-
-	if (logPending != NULL)
-		delete [] logPending;
-#endif
+// Handle console event
+bool WINAPI ConsoleHandler(DWORD msgType)
+{
+    if (msgType == CTRL_C_EVENT)
+    {
+		OutputDebugString(L"Ctrl-C!\n");
+        return TRUE;
+    }
+    else if (msgType == CTRL_CLOSE_EVENT)
+    {
+        OutputDebugString(L"Close console window!\n");
+		return TRUE;
+    }
+    /*
+        Other messages:
+        CTRL_BREAK_EVENT         Ctrl-Break pressed
+        CTRL_LOGOFF_EVENT        User log off
+        CTRL_SHUTDOWN_EVENT      System shutdown
+    */
+    return FALSE;
 }
+#endif
+
 
 // 100, 100, "Dolphin Log Console"
 // Open console window - width and height is the size of console window
 // Name is the window title
-void ConsoleListener::Open(bool Hidden, int Width, int Height, const char *Title)
+void ConsoleListener::Init(bool AutoOpen, int Width, int Height, const char *Title)
 {
-  bHidden = Hidden;
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
+	openWidth_ = Width;
+	openHeight_ = Height;
+	title_ = ConvertUTF8ToWString(Title);
+
+	if (AutoOpen)
+		Open();
+#endif
+}
+
+void ConsoleListener::Open()
+{
+#if defined(USING_WIN_UI)
 	if (!GetConsoleWindow())
 	{
 		// Open the console window and create the window handle for GetStdHandle()
 		AllocConsole();
-		HWND hConWnd = GetConsoleWindow();
-		ShowWindow(hConWnd, SW_SHOWDEFAULT);
-		// Hide
-		if (Hidden) ShowWindow(hConWnd, SW_HIDE);
+		hWnd = GetConsoleWindow();
+		ShowWindow(hWnd, SW_SHOWDEFAULT);
+		// disable console close button
+		HMENU hMenu=GetSystemMenu(hWnd, false);
+		EnableMenuItem(hMenu,SC_CLOSE,MF_GRAYED|MF_BYCOMMAND);
 		// Save the window handle that AllocConsole() created
 		hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+		// Set console handler
+		if(SetConsoleCtrlHandler((PHANDLER_ROUTINE)ConsoleHandler, TRUE)){OutputDebugString(L"Console handler is installed!\n");}
 		// Set the console window title
-		SetConsoleTitle(Title);
+		SetConsoleTitle(title_.c_str());
+		SetConsoleCP(CP_UTF8);
+
 		// Set letter space
-		LetterSpace(Width, LOG_MAX_DISPLAY_LINES);
+		LetterSpace(openWidth_, LOG_MAX_DISPLAY_LINES);
 		//MoveWindow(GetConsoleWindow(), 200,200, 800,800, true);
 	}
 	else
@@ -96,34 +143,33 @@ void ConsoleListener::Open(bool Hidden, int Width, int Height, const char *Title
 		hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
 	}
 
-	if (hTriggerEvent != NULL)
-	{
-		logPending = new char[LOG_PENDING_MAX];
-		hThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) &ConsoleListener::RunThread, this, 0, NULL);
-	}
+	if (hTriggerEvent != NULL && hThread == NULL)
+		hThread = (HANDLE)_beginthreadex(NULL, 0, &ConsoleListener::RunThread, this, 0, NULL);
 #endif
 }
 
 void ConsoleListener::Show(bool bShow)
 {
-#ifdef _WIN32
-  if (bShow && bHidden)
-  {
-    ShowWindow(GetConsoleWindow(), SW_SHOW);
-    bHidden = false;
-  }
-  else if (!bShow && !bHidden)
-  {
-    ShowWindow(GetConsoleWindow(), SW_HIDE);
-    bHidden = true;
-  }
+#if defined(USING_WIN_UI)
+	if (bShow && bHidden)
+	{
+		if (!IsOpen())
+			Open();
+		ShowWindow(GetConsoleWindow(), SW_SHOW);
+		bHidden = false;
+	}
+	else if (!bShow && !bHidden)
+	{
+		ShowWindow(GetConsoleWindow(), SW_HIDE);
+		bHidden = true;
+	}
 #endif
 }
 
 
 void ConsoleListener::UpdateHandle()
 {
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
 	hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
 #endif
 }
@@ -131,21 +177,34 @@ void ConsoleListener::UpdateHandle()
 // Close the console window and close the eventual file handle
 void ConsoleListener::Close()
 {
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
 	if (hConsole == NULL)
 		return;
 
-	if (hThread != NULL)
+	if (--refCount <= 0)
 	{
-		Common::AtomicStoreRelease(logPendingWritePos, (u32) -1);
+		if (hThread != NULL)
+		{
+			Common::AtomicStoreRelease(logPendingWritePos, (u32) -1);
 
-		SetEvent(hTriggerEvent);
-		WaitForSingleObject(hThread, LOG_SHUTDOWN_DELAY_MS);
-		CloseHandle(hThread);
-		hThread = NULL;
+			SetEvent(hTriggerEvent);
+			WaitForSingleObject(hThread, LOG_SHUTDOWN_DELAY_MS);
+			CloseHandle(hThread);
+			hThread = NULL;
+		}
+		if (hTriggerEvent != NULL)
+		{
+			DeleteCriticalSection(&criticalSection);
+			CloseHandle(hTriggerEvent);
+			hTriggerEvent = NULL;
+		}
+		if (logPending != NULL)
+		{
+			delete [] logPending;
+			logPending = NULL;
+		}
+		refCount = 0;
 	}
-	if (hTriggerEvent != NULL)
-		CloseHandle(hTriggerEvent);
 
 	FreeConsole();
 	hConsole = NULL;
@@ -156,7 +215,7 @@ void ConsoleListener::Close()
 
 bool ConsoleListener::IsOpen()
 {
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
 	return (hConsole != NULL);
 #else
 	return true;
@@ -169,31 +228,33 @@ bool ConsoleListener::IsOpen()
 */
 void ConsoleListener::BufferWidthHeight(int BufferWidth, int BufferHeight, int ScreenWidth, int ScreenHeight, bool BufferFirst)
 {
-#ifdef _WIN32
+	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+#if defined(USING_WIN_UI)
 	BOOL SB, SW;
 	if (BufferFirst)
 	{
 		// Change screen buffer size
-		COORD Co = {BufferWidth, BufferHeight};
+		COORD Co = {(SHORT)BufferWidth, (SHORT)BufferHeight};
 		SB = SetConsoleScreenBufferSize(hConsole, Co);
 		// Change the screen buffer window size
-		SMALL_RECT coo = {0,0,ScreenWidth, ScreenHeight}; // top, left, right, bottom
+		SMALL_RECT coo = {(SHORT)0, (SHORT)0, (SHORT)ScreenWidth, (SHORT)ScreenHeight}; // top, left, right, bottom
 		SW = SetConsoleWindowInfo(hConsole, TRUE, &coo);
 	}
 	else
 	{
 		// Change the screen buffer window size
-		SMALL_RECT coo = {0,0, ScreenWidth, ScreenHeight}; // top, left, right, bottom
+		SMALL_RECT coo = {(SHORT)0, (SHORT)0, (SHORT)ScreenWidth, (SHORT)ScreenHeight}; // top, left, right, bottom
 		SW = SetConsoleWindowInfo(hConsole, TRUE, &coo);
 		// Change screen buffer size
-		COORD Co = {BufferWidth, BufferHeight};
+		COORD Co = {(SHORT)BufferWidth, (SHORT)BufferHeight};
 		SB = SetConsoleScreenBufferSize(hConsole, Co);
 	}
 #endif
 }
 void ConsoleListener::LetterSpace(int Width, int Height)
 {
-#ifdef _WIN32
+	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+#if defined(USING_WIN_UI)
 	// Get console info
 	CONSOLE_SCREEN_BUFFER_INFO ConInfo;
 	GetConsoleScreenBufferInfo(hConsole, &ConInfo);
@@ -219,7 +280,7 @@ void ConsoleListener::LetterSpace(int Width, int Height)
 #endif
 }
 
-#ifdef _WIN32
+#if defined(USING_WIN_UI)
 COORD ConsoleListener::GetCoordinates(int BytesRead, int BufferWidth)
 {
 	COORD Ret = {0, 0};
@@ -231,9 +292,10 @@ COORD ConsoleListener::GetCoordinates(int BytesRead, int BufferWidth)
 	return Ret;
 }
 
-DWORD WINAPI ConsoleListener::RunThread(LPVOID lpParam)
+unsigned int WINAPI ConsoleListener::RunThread(void *lpParam)
 {
-	ConsoleListener *consoleLog = (ConsoleListener *) lpParam;
+	setCurrentThreadName("Console");
+	ConsoleListener *consoleLog = (ConsoleListener *)lpParam;
 	consoleLog->LogWriterThread();
 	return 0;
 }
@@ -376,8 +438,10 @@ void ConsoleListener::SendToThread(LogTypes::LOG_LEVELS Level, const char *Text)
 	}
 
 	// Double check we didn't start quitting.
-	if (logPendingWritePos == (u32) -1)
+	if (logPendingWritePos == (u32) -1) {
+		LeaveCriticalSection(&criticalSection);
 		return;
+	}
 
 	Common::AtomicStoreRelease(logPendingWritePos, logWritePos);
 	LeaveCriticalSection(&criticalSection);
@@ -387,6 +451,8 @@ void ConsoleListener::SendToThread(LogTypes::LOG_LEVELS Level, const char *Text)
 
 void ConsoleListener::WriteToConsole(LogTypes::LOG_LEVELS Level, const char *Text, size_t Len)
 {
+	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+
 	/*
 	const int MAX_BYTES = 1024*10;
 	char Str[MAX_BYTES];
@@ -398,6 +464,7 @@ void ConsoleListener::WriteToConsole(LogTypes::LOG_LEVELS Level, const char *Tex
 	*/
 	DWORD cCharsWritten;
 	WORD Color;
+	static wchar_t tempBuf[2048];
 
 	switch (Level)
 	{
@@ -424,27 +491,29 @@ void ConsoleListener::WriteToConsole(LogTypes::LOG_LEVELS Level, const char *Tex
 	{
 		// First 10 chars white
 		SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-		WriteConsole(hConsole, Text, 10, &cCharsWritten, NULL);
+		int wlen = MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, NULL, NULL);
+		MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, tempBuf, wlen);
+		WriteConsole(hConsole, tempBuf, 10, &cCharsWritten, NULL);
 		Text += 10;
 		Len -= 10;
 	}
 	SetConsoleTextAttribute(hConsole, Color);
-	WriteConsole(hConsole, Text, (DWORD)Len, &cCharsWritten, NULL);
+	int wlen = MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, NULL, NULL);
+	MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, tempBuf, wlen);
+	WriteConsole(hConsole, tempBuf, (DWORD)Len, &cCharsWritten, NULL);
 }
 #endif
 
 void ConsoleListener::PixelSpace(int Left, int Top, int Width, int Height, bool Resize)
 {
-#ifdef _WIN32
+	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+#if defined(USING_WIN_UI)
 	// Check size
 	if (Width < 8 || Height < 12) return;
 
 	bool DBef = true;
 	bool DAft = true;
 	std::string SLog = "";
-
-	const HWND hWnd = GetConsoleWindow();
-	const HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
 
 	// Get console info
 	CONSOLE_SCREEN_BUFFER_INFO ConInfo;
@@ -459,7 +528,7 @@ void ConsoleListener::PixelSpace(int Left, int Top, int Width, int Height, bool 
 
 	static const int MAX_BYTES = 1024 * 16;
 
-	std::vector<std::array<CHAR, MAX_BYTES>> Str;
+	std::vector<std::array<wchar_t, MAX_BYTES>> Str;
 	std::vector<std::array<WORD, MAX_BYTES>> Attr;
 
 	// ReadConsoleOutputAttribute seems to have a limit at this level
@@ -522,8 +591,8 @@ void ConsoleListener::PixelSpace(int Left, int Top, int Width, int Height, bool 
 
 void ConsoleListener::Log(LogTypes::LOG_LEVELS Level, const char *Text)
 {
-#if defined(_WIN32)
-	if (hThread == NULL)
+#if defined(USING_WIN_UI)
+	if (hThread == NULL && IsOpen())
 		WriteToConsole(Level, Text, strlen(Text));
 	else
 		SendToThread(Level, Text);
@@ -555,13 +624,12 @@ void ConsoleListener::Log(LogTypes::LOG_LEVELS Level, const char *Text)
 // Clear console screen
 void ConsoleListener::ClearScreen(bool Cursor)
 { 
-#if defined(_WIN32)
+	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+#if defined(USING_WIN_UI)
 	COORD coordScreen = { 0, 0 }; 
 	DWORD cCharsWritten; 
 	CONSOLE_SCREEN_BUFFER_INFO csbi; 
 	DWORD dwConSize; 
-	
-	HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE); 
 	
 	GetConsoleScreenBufferInfo(hConsole, &csbi); 
 	dwConSize = csbi.dwSize.X * csbi.dwSize.Y;

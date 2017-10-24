@@ -17,11 +17,7 @@
 
 #pragma once
 
-#ifdef __arm__
-#if !defined(ARM)
-#define ARM
-#endif
-#endif
+#include "MsgHandler.h"
 
 #define	NOTICE_LEVEL  1  // VERY important information that is NOT errors. Like startup and debugprintfs from the game itself.
 #define	ERROR_LEVEL   2  // Important errors.
@@ -30,45 +26,48 @@
 #define	DEBUG_LEVEL   5  // Detailed debugging - might make things slow.
 #define	VERBOSE_LEVEL 6  // Noisy debugging - sometimes needed but usually unimportant.
 
-#if !defined(_WIN32) && !defined(PANDORA)
-#if defined(MAEMO)
-       //ucontext.h will be then skipped
-       #define _SYS_UCONTEXT_H 1
-#endif
+#if !defined(_WIN32)
 #include <signal.h>
 #endif
+
+#include <cstdio>
 
 namespace LogTypes
 {
 
 enum LOG_TYPE {
 	MASTER_LOG,
+
+	SCEAUDIO,
+	SCECTRL,
+	SCEDISPLAY,
+	SCEFONT,
+	SCEGE,
+	SCEINTC,
+	SCEIO,
+	SCEKERNEL,
+	SCEMODULE,
+	SCENET,
+	SCERTC,
+	SCESAS,
+	SCEUTILITY,
+
 	BOOT,
 	COMMON,
 	CPU,
-	LOADER,
-	IO,
-	PAD,
 	FILESYS,
-	DISCIO,
 	G3D,
-	DMA,
-	INTC,
-	MEMMAP,
-	SOUND,
-	SAS,
-	HLE,
-	TIMER,
-	VIDEO,
-	DYNA_REC,
-	NETPLAY,
+	HLE,  // dumping ground that we should get rid off
+	JIT,
+	LOADER,
 	ME,
+	MEMMAP,
+	TIME,
+	SASMIX,
 
 	NUMBER_OF_LOGS,  // Must be last
-	JIT = DYNA_REC,
 };
 
-// FIXME: should this be removed?
 enum LOG_LEVELS {
 	LNOTICE = NOTICE_LEVEL,
 	LERROR = ERROR_LEVEL,
@@ -78,19 +77,17 @@ enum LOG_LEVELS {
 	LVERBOSE = VERBOSE_LEVEL,
 };
 
-#define LOGTYPES_LEVELS LogTypes::LOG_LEVELS
-#define LOGTYPES_TYPE LogTypes::LOG_TYPE
-
 }  // namespace
 
-void GenericLog(LOGTYPES_LEVELS level, LOGTYPES_TYPE type,
+void GenericLog(LogTypes::LOG_LEVELS level, LogTypes::LOG_TYPE type,
 		const char *file, int line, const char *fmt, ...)
 #ifdef __GNUC__
 		__attribute__((format(printf, 5, 6)))
 #endif
 		;
+bool GenericLogEnabled(LogTypes::LOG_LEVELS level, LogTypes::LOG_TYPE type);
 
-#if defined(LOGGING) || defined(_DEBUG) || defined(DEBUGFAST)
+#if defined(LOGGING) || defined(_DEBUG) || defined(DEBUGFAST) || defined(_WIN32)
 #define MAX_LOGLEVEL DEBUG_LEVEL
 #else
 #ifndef MAX_LOGLEVEL
@@ -104,18 +101,18 @@ void GenericLog(LOGTYPES_LEVELS level, LOGTYPES_TYPE type,
 		GenericLog(v, t, __FILE__, __LINE__, __VA_ARGS__); \
 	}
 
-#define ERROR_LOG(t,...)   { GENERIC_LOG(LogTypes::t, LogTypes::LERROR, __VA_ARGS__) }
-#define WARN_LOG(t,...)    { GENERIC_LOG(LogTypes::t, LogTypes::LWARNING, __VA_ARGS__) }
-#define NOTICE_LOG(t,...)  { GENERIC_LOG(LogTypes::t, LogTypes::LNOTICE, __VA_ARGS__) }
-#define INFO_LOG(t,...)    { GENERIC_LOG(LogTypes::t, LogTypes::LINFO, __VA_ARGS__) }
-#define DEBUG_LOG(t,...)   { GENERIC_LOG(LogTypes::t, LogTypes::LDEBUG, __VA_ARGS__) }
-#define VERBOSE_LOG(t,...) { GENERIC_LOG(LogTypes::t, LogTypes::LVERBOSE, __VA_ARGS__) }
+#define ERROR_LOG(t,...)   do { GENERIC_LOG(LogTypes::t, LogTypes::LERROR, __VA_ARGS__) } while (false)
+#define WARN_LOG(t,...)    do { GENERIC_LOG(LogTypes::t, LogTypes::LWARNING, __VA_ARGS__) } while (false)
+#define NOTICE_LOG(t,...)  do { GENERIC_LOG(LogTypes::t, LogTypes::LNOTICE, __VA_ARGS__) } while (false)
+#define INFO_LOG(t,...)    do { GENERIC_LOG(LogTypes::t, LogTypes::LINFO, __VA_ARGS__) } while (false)
+#define DEBUG_LOG(t,...)   do { GENERIC_LOG(LogTypes::t, LogTypes::LDEBUG, __VA_ARGS__) } while (false)
+#define VERBOSE_LOG(t,...) do { GENERIC_LOG(LogTypes::t, LogTypes::LVERBOSE, __VA_ARGS__) } while (false)
 
 #if MAX_LOGLEVEL >= DEBUG_LEVEL
 #define _dbg_assert_(_t_, _a_) \
 	if (!(_a_)) {\
-		ERROR_LOG(_t_, "Error...\n\n  Line: %d\n  File: %s\n  Time: %s\n\nIgnore and continue?", \
-					   __LINE__, __FILE__, __TIME__); \
+		ERROR_LOG(_t_, "Error...\n\n  Line: %d\n  File: %s\n\nIgnore and continue?", \
+					   __LINE__, __FILE__); \
 		if (!PanicYesNo("*** Assertion (see log)***\n")) {Crash();} \
 	}
 #define _dbg_assert_msg_(_t_, _a_, ...)\

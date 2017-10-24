@@ -17,13 +17,34 @@
 
 #pragma once
 
-#include "sceKernel.h"
-#include "HLE.h"
+#include <string>
+#include "Core/HLE/sceKernel.h"
+
+struct PspModuleInfo {
+	u16_le moduleAttrs; //0x0000 User Mode, 0x1000 Kernel Mode
+	u16_le moduleVersion;
+	// 28 bytes of module name, packed with 0's.
+	char name[28];
+	u32_le gp;               // ptr to MIPS GOT data  (global offset table)
+	u32_le libent;           // ptr to .lib.ent section
+	u32_le libentend;        // ptr to end of .lib.ent section
+	u32_le libstub;          // ptr to .lib.stub section
+	u32_le libstubend;       // ptr to end of .lib.stub section
+};
+
+class PointerWrap;
 
 KernelObject *__KernelModuleObject();
 void __KernelModuleDoState(PointerWrap &p);
+void __KernelModuleShutdown();
 
 u32 __KernelGetModuleGP(SceUID module);
-bool __KernelLoadExec(const char *filename, SceKernelLoadExecParam *param, std::string *error_string);
+bool __KernelLoadExec(const char *filename, u32 paramPtr, std::string *error_string);
+void __KernelReturnFromModuleFunc();
+u32 hleKernelStopUnloadSelfModuleWithOrWithoutStatus(u32 exitCode, u32 argSize, u32 argp, u32 statusAddr, u32 optionAddr, bool WithStatus);
 
 void Register_ModuleMgrForUser();
+void Register_ModuleMgrForKernel();
+
+// Expose for use by KUBridge.
+u32 sceKernelLoadModule(const char *name, u32 flags, u32 optionAddr);

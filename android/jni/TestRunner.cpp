@@ -15,20 +15,20 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-
 // TO USE:
 // Simply copy pspautotests to the root of the USB memory / SD card of your android device.
 // Then go to Settings / Developer Menu / Run CPU tests.
 // It currently just runs one test but that can be easily changed.
 
 #include <string>
+#include <fstream>
 #include <sstream>
 #include <iostream>
 
 #include "base/basictypes.h"
 #include "base/display.h"
 #include "base/logging.h"
-#include "gfx_es2/gl_state.h"
+#include "gfx/gl_common.h"
 
 #include "Core/Core.h"
 #include "Core/System.h"
@@ -36,7 +36,6 @@
 #include "Core/CoreTiming.h"
 #include "Core/MIPS/MIPS.h"
 #include "TestRunner.h"
-
 
 static const char * const testsToRun[] = {
 	"cpu/cpu_alu/cpu_alu",
@@ -51,32 +50,41 @@ static const char * const testsToRun[] = {
 	"cpu/vfpu/gum",
 };
 
+static std::string TrimNewlines(const std::string &s) {
+	size_t p = s.find_last_not_of("\r\n");
+	if (p == s.npos) {
+		return "";
+	}
+	return s.substr(0, p + 1);
+}
+
 void RunTests()
 {
 	std::string output;
 
+#ifdef IOS
+	const std::string baseDirectory = g_Config.flash0Directory + "../";
+#else
+	const std::string baseDirectory = g_Config.memStickDirectory;
+#endif
+
 	CoreParameter coreParam;
-	coreParam.cpuCore = g_Config.bJit ? CPU_JIT : CPU_INTERPRETER;
-	coreParam.gpuCore = GPU_GLES;
+	coreParam.cpuCore = (CPUCore)g_Config.iCpuCore;
+	coreParam.gpuCore = g_Config.bSoftwareRendering ? GPUCORE_SOFTWARE : GPUCORE_GLES;
 	coreParam.enableSound = g_Config.bEnableSound;
+	coreParam.graphicsContext = PSP_CoreParameter().graphicsContext;
 	coreParam.mountIso = "";
+	coreParam.mountRoot = baseDirectory + "pspautotests/";
 	coreParam.startPaused = false;
-	coreParam.enableDebugging = false;
 	coreParam.printfEmuLog = false;
-	coreParam.headLess = false;
+	coreParam.headLess = true;
 	coreParam.renderWidth = 480;
 	coreParam.renderHeight = 272;
 	coreParam.pixelWidth = 480;
 	coreParam.pixelHeight = 272;
-	coreParam.useMediaEngine = false;
 	coreParam.collectEmuLog = &output;
 	coreParam.unthrottle = true;
-
-#ifdef IOS
-	std::string baseDirectory = g_Config.flashDirectory + "../";
-#else
-	std::string baseDirectory = g_Config.memCardDirectory;
-#endif
+	coreParam.updateRecent = false;
 
 	// Never report from tests.
 	std::string savedReportHost = g_Config.sReportHost;
@@ -87,11 +95,13 @@ void RunTests()
 		coreParam.fileToStart = baseDirectory + "pspautotests/tests/" + testName + ".prx";
 		std::string expectedFile = baseDirectory + "pspautotests/tests/" + testName + ".expected";
 
-		ILOG("Preparing to execute %s", testName)
+		ILOG("Preparing to execute %s", testName);
 		std::string error_string;
 		output = "";
 		if (!PSP_Init(coreParam, &error_string)) {
 			ELOG("Failed to init unittest %s : %s", testsToRun[i], error_string.c_str());
+			PSP_CoreParameter().pixelWidth = pixel_xres;
+			PSP_CoreParameter().pixelHeight = pixel_yres;
 			return;
 		}
 
@@ -99,8 +109,7 @@ void RunTests()
 		while (true) {
 			int blockTicks = usToCycles(1000000 / 10);
 			while (coreState == CORE_RUNNING) {
-				u64 nowTicks = CoreTiming::GetTicks();
-				mipsr4k.RunLoopUntil(nowTicks + blockTicks);
+				PSP_RunLoopFor(blockTicks);
 			}
 			// Hopefully coreState is now CORE_NEXTFRAME
 			if (coreState == CORE_NEXTFRAME) {
@@ -115,7 +124,7 @@ void RunTests()
 		std::ifstream expected(expectedFile.c_str(), std::ios_base::in);
 		if (!expected) {
 			ELOG("Error opening expectedFile %s", expectedFile.c_str());
-			return;
+			break;
 		}
 
 		std::istringstream logoutput(output);
@@ -127,14 +136,12 @@ void RunTests()
 			std::getline(expected, e);
 			std::getline(logoutput, o);
 			// Remove stray returns
-			while (e[e.size()-1] == 10 || e[e.size()-1] == 13)
-				e = e.substr(0, e.size() - 1);  // For some reason we get some extra character
-			while (o[o.size()-1] == 10 || o[o.size()-1] == 13)
-				o = o.substr(0, o.size() - 1);  // For some reason we get some extra character
+			e = TrimNewlines(e);
+			o = TrimNewlines(o);
 			if (e != o) {
 				ELOG("DIFF on line %i!", line);
-				ILOG("O: %s", o.c_str());
-				ILOG("E: %s", e.c_str());
+				ELOG("O: %s", o.c_str());
+				ELOG("E: %s", e.c_str());
 			}
 			if (expected.eof()) {
 				break;
@@ -145,8 +152,9 @@ void RunTests()
 		}
 		PSP_Shutdown();
 	}
-	glstate.Restore();
-	glstate.viewport.set(0,0,pixel_xres,pixel_yres);
-
+	glViewport(0,0,pixel_xres,pixel_yres);
+	PSP_CoreParameter().pixelWidth = pixel_xres;
+	PSP_CoreParameter().pixelHeight = pixel_yres;
+	PSP_CoreParameter().headLess = false;
 	g_Config.sReportHost = savedReportHost;
 }

@@ -15,10 +15,12 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include <stdio.h>
-#include <string.h>
-#include "../Globals.h"
-#include "ParamSFO.h"
+#include <cstdio>
+#include <cstring>
+
+#include "Common/CommonTypes.h"
+#include "Common/Log.h"
+#include "Core/ELF/ParamSFO.h"
 
 struct Header
 {
@@ -84,9 +86,19 @@ u8* ParamSFOData::GetValueData(std::string key, unsigned int *size)
 	return it->second.u_value;
 }
 
+std::vector<std::string> ParamSFOData::GetKeys() {
+	std::vector<std::string> result;
+	for (const auto &pair : values) {
+		result.push_back(pair.first);
+	}
+	return result;
+}
+
 // I'm so sorry Ced but this is highly endian unsafe :(
 bool ParamSFOData::ReadSFO(const u8 *paramsfo, size_t size)
 {
+	if (size < sizeof(Header))
+		return false;
 	const Header *header = (const Header *)paramsfo;
 	if (header->magic != 0x46535000)
 		return false;
@@ -108,14 +120,14 @@ bool ParamSFOData::ReadSFO(const u8 *paramsfo, size_t size)
 				// Unsigned int
 				const u32 *data = (const u32 *)(data_start + indexTables[i].data_table_offset);
 				SetValue(key,*data,indexTables[i].param_max_len);
-				DEBUG_LOG(LOADER, "%s %08x", key, *data);
+				VERBOSE_LOG(LOADER, "%s %08x", key, *data);
 			}
 			break;
 		case 0x0004:
 			// Special format UTF-8
 			{
 				const u8 *utfdata = (const u8 *)(data_start + indexTables[i].data_table_offset);
-				DEBUG_LOG(LOADER, "%s %s", key, utfdata);
+				VERBOSE_LOG(LOADER, "%s %s", key, utfdata);
 				SetValue(key, utfdata, indexTables[i].param_len, indexTables[i].param_max_len);
 			}
 			break;
@@ -123,8 +135,8 @@ bool ParamSFOData::ReadSFO(const u8 *paramsfo, size_t size)
 			// Regular UTF-8
 			{
 				const char *utfdata = (const char *)(data_start + indexTables[i].data_table_offset);
-				DEBUG_LOG(LOADER, "%s %s", key, utfdata);
-				SetValue(key,std::string(utfdata,indexTables[i].param_len),indexTables[i].param_max_len);
+				VERBOSE_LOG(LOADER, "%s %s", key, utfdata);
+				SetValue(key,std::string(utfdata /*, indexTables[i].param_len*/), indexTables[i].param_max_len);
 			}
 			break;
 		}
@@ -172,7 +184,7 @@ bool ParamSFOData::WriteSFO(u8 **paramsfo, size_t *size)
 	total_size += sizeof(Header);
 
 	// Get size info
-	for (std::map<std::string,ValueData>::iterator it = values.begin(); it != values.end(); it++)
+	for (auto it = values.begin(); it != values.end(); ++it)
 	{
 		key_size += it->first.size()+1;
 		data_size += it->second.max_size;
@@ -201,7 +213,7 @@ bool ParamSFOData::WriteSFO(u8 **paramsfo, size_t *size)
 	u8* key_ptr = data + header.key_table_start;
 	u8* data_ptr = data + header.data_table_start;
 
-	for (std::map<std::string,ValueData>::iterator it = values.begin(); it != values.end(); it++)
+	for (auto it = values.begin(); it != values.end(); ++it)
 	{
 		u16 offset = (u16)(key_ptr - (data+header.key_table_start));
 		index_ptr->key_table_offset = offset;
@@ -242,7 +254,25 @@ bool ParamSFOData::WriteSFO(u8 **paramsfo, size_t *size)
 	}
 
 	return true;
+}
 
+void ParamSFOData::Clear()
+{
+	values.clear();
+}
 
+void ParamSFOData::ValueData::SetData(const u8* data, int size)
+{
+	if(u_value)
+	{
+		delete[] u_value;
+		u_value = 0;
+	}
+	if(size > 0)
+	{
+		u_value = new u8[size];
+		memcpy(u_value, data, size);
+	}
+	u_size = size;
 }
 

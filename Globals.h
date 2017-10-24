@@ -18,10 +18,12 @@
 #pragma once
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include <string>
 #include <utility>
 
+#include "ppsspp_config.h"
 #include "Log.h"
 
 #include "CommonTypes.h"
@@ -29,31 +31,28 @@
 #define IS_LITTLE_ENDIAN (*(const u16 *)"\0\xff" >= 0x100)
 #define IS_BIG_ENDIAN (*(const u16 *)"\0\xff" < 0x100)
 
-#ifndef _WIN32
-
-inline u32 _byteswap_ulong(u32 data)
-{
-  return ((data << 24)) | ((data >> 24)) | ((data >> 8) & 0x0000FF00) | ((data << 8) & 0x00FF0000);
-}
-
+static inline u8 clamp_u8(int i) {
+#if PPSSPP_ARCH(ARM)
+	asm("usat %0, #8, %1" : "=r"(i) : "r"(i));
+#else
+	if (i > 255)
+		return 255;
+	if (i < 0)
+		return 0;
 #endif
-
-inline u8 Convert4To8(u8 v)
-{
-	// Swizzle bits: 00012345 -> 12345123
-	return (v << 4) | (v);
+	return i;
 }
 
-inline u8 Convert5To8(u8 v)
-{
-	// Swizzle bits: 00012345 -> 12345123
-	return (v << 3) | (v >> 2);
-}
-
-inline u8 Convert6To8(u8 v)
-{
-	// Swizzle bits: 00123456 -> 12345612
-	return (v << 2) | (v >> 4);
+static inline s16 clamp_s16(int i) {
+#if PPSSPP_ARCH(ARM)
+	asm("ssat %0, #16, %1" : "=r"(i) : "r"(i));
+#else
+	if (i > 32767)
+		return 32767;
+	if (i < -32768)
+		return -32768;
+#endif
+	return i;
 }
 
 #ifndef DISALLOW_COPY_AND_ASSIGN

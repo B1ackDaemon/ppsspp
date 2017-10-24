@@ -1,7 +1,9 @@
-xcopy ..\flash0 assets\flash0 /s /y
-xcopy ..\lang assets\lang /s /y
+xcopy ..\flash0 assets\flash0 /s /y <d.txt
+xcopy ..\assets\lang assets\lang /s /y <d.txt
+xcopy ..\assets\shaders assets\shaders /s /y <d.txt
+copy ..\assets\langregion.ini assets\langregion.ini
+copy ..\assets\compat.ini assets\compat.ini
+copy ..\assets\*.png assets
 SET NDK=C:\AndroidNDK
-SET NDK_MODULE_PATH=..;..\native\ext
-REM Need to force target-platform to android-9 to get access to OpenSL headers.
-REM Hopefully this won't negatively affect anything else.
-%NDK%/ndk-build TARGET_PLATFORM=android-9 -j9 %1
+SET NDK_MODULE_PATH=..\ext;..\ext\native\ext
+%NDK%/ndk-build -j9 %*

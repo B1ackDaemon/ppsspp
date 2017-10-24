@@ -17,80 +17,161 @@
 
 #pragma once
 
-#include "../../Globals.h"
 #include <vector>
+#include <set>
+#include <map>
+#include <string>
 
-enum SymbolType
-{
-	ST_FUNCTION=1,
-	ST_DATA=2
+#include "base/mutex.h"
+
+#include "Common/CommonTypes.h"
+
+enum SymbolType {
+	ST_NONE     = 0,
+	ST_FUNCTION = 1,
+	ST_DATA     = 2,
+	ST_ALL      = 3,
 };
+
+struct SymbolInfo {
+	SymbolType type;
+	u32 address;
+	u32 size;
+	u32 moduleAddress;
+};
+
+struct SymbolEntry {
+	std::string name;
+	u32 address;
+	u32 size;
+};
+
+struct LoadedModuleInfo {
+	std::string name;
+	u32 address;
+	u32 size;
+	bool active;
+};
+
+enum DataType {
+	DATATYPE_NONE, DATATYPE_BYTE, DATATYPE_HALFWORD, DATATYPE_WORD, DATATYPE_ASCII
+};
+
+struct LabelDefinition;
 
 #ifdef _WIN32
 struct HWND__;
 typedef struct HWND__ *HWND;
 #endif
 
-class SymbolMap
-{
+class SymbolMap {
 public:
-	SymbolMap() {}
-	bool LoadSymbolMap(const char *filename);
-	void SaveSymbolMap(const char *filename);
-	void AddSymbol(const char *symbolname, unsigned int vaddress, size_t size, SymbolType symbol);
-	void ResetSymbolMap();
-	void AnalyzeBackwards();
-	int GetSymbolNum(unsigned int address, SymbolType symmask=ST_FUNCTION);
-	char *GetDescription(unsigned int address);
-#ifdef _WIN32
-	void FillSymbolListBox(HWND listbox, SymbolType symmask=ST_FUNCTION);
-	void FillSymbolComboBox(HWND listbox,SymbolType symmask=ST_FUNCTION);
-	void FillListBoxBLinks(HWND listbox, int num);
-#endif
-	int GetNumSymbols();
-	char *GetSymbolName(int i);
-	void SetSymbolName(int i, const char *newname);
-	u32 GetSymbolSize(int i);
-	u32 GetSymbolAddr(int i);
-	SymbolType GetSymbolType(int i);
-	int FindSymbol(const char *name);
-	u32	GetAddress(int num);
-	void IncreaseRunCount(int num);
-	unsigned int GetRunCount(int num);
+	SymbolMap() : sawUnknownModule(false) {}
+	void Clear();
 	void SortSymbols();
 
-	void UseFuncSignaturesFile(const char *filename, u32 maxAddress);
-	void CompileFuncSignaturesFile(const char *filename);
+	bool LoadSymbolMap(const char *filename);
+	void SaveSymbolMap(const char *filename) const;
+	bool LoadNocashSym(const char *ilename);
+	void SaveNocashSym(const char *filename) const;
+
+	SymbolType GetSymbolType(u32 address) const;
+	bool GetSymbolInfo(SymbolInfo *info, u32 address, SymbolType symmask = ST_FUNCTION) const;
+	u32 GetNextSymbolAddress(u32 address, SymbolType symmask);
+	std::string GetDescription(unsigned int address) const;
+	std::vector<SymbolEntry> GetAllSymbols(SymbolType symmask);
+
+#ifdef _WIN32
+	void FillSymbolListBox(HWND listbox, SymbolType symType) const;
+#endif
+	void GetLabels(std::vector<LabelDefinition> &dest) const;
+
+	void AddModule(const char *name, u32 address, u32 size);
+	void UnloadModule(u32 address, u32 size);
+	u32 GetModuleRelativeAddr(u32 address, int moduleIndex = -1) const;
+	u32 GetModuleAbsoluteAddr(u32 relative, int moduleIndex) const;
+	int GetModuleIndex(u32 address) const;
+	bool IsModuleActive(int moduleIndex) const;
+	std::vector<LoadedModuleInfo> getAllModules() const;
+
+	void AddFunction(const char* name, u32 address, u32 size, int moduleIndex = -1);
+	u32 GetFunctionStart(u32 address) const;
+	int GetFunctionNum(u32 address) const;
+	u32 GetFunctionSize(u32 startAddress) const;
+	u32 GetFunctionModuleAddress(u32 startAddress) const;
+	bool SetFunctionSize(u32 startAddress, u32 newSize);
+	bool RemoveFunction(u32 startAddress, bool removeName);
+	// Search for the first address their may be a function after address.
+	// Only valid for currently loaded modules.  Not guaranteed there will be a function.
+	u32 FindPossibleFunctionAtAfter(u32 address) const;
+
+	void AddLabel(const char* name, u32 address, int moduleIndex = -1);
+	std::string GetLabelString(u32 address) const;
+	void SetLabelName(const char* name, u32 address);
+	bool GetLabelValue(const char* name, u32& dest);
+
+	void AddData(u32 address, u32 size, DataType type, int moduleIndex = -1);
+	u32 GetDataStart(u32 address) const;
+	u32 GetDataSize(u32 startAddress) const;
+	u32 GetDataModuleAddress(u32 startAddress) const;
+	DataType GetDataType(u32 startAddress) const;
+
+	static const u32 INVALID_ADDRESS = (u32)-1;
+
+	void UpdateActiveSymbols();
 
 private:
-	struct MapEntry
-	{
-		u32 address;
-		u32 vaddress;
+	void AssignFunctionIndices();
+	const char *GetLabelName(u32 address) const;
+	const char *GetLabelNameRel(u32 relAddress, int moduleIndex) const;
+
+	struct FunctionEntry {
+		u32 start;
 		u32 size;
-		u32 unknown;
-
-		u32 runCount;
-
-		SymbolType type;
-
-#ifdef BWLINKS
-		std::vector <u32> backwardLinks;
-#endif
-
-		char name[128];
-
-		void UndecorateName()
-		{
-			// TODO
-		}
-
-		bool operator <(const MapEntry &other) const {
-			return vaddress < other.vaddress;
-		}
+		int index;
+		int module;
 	};
 
-	std::vector<MapEntry> entries;
+	struct LabelEntry {
+		u32 addr;
+		int module;
+		char name[128];
+	};
+
+	struct DataEntry {
+		DataType type;
+		u32 start;
+		u32 size;
+		int module;
+	};
+
+	struct ModuleEntry {
+		// Note: this index is +1, 0 matches any for backwards-compat.
+		int index;
+		u32 start;
+		u32 size;
+		char name[128];
+	};
+
+	// These are flattened, read-only copies of the actual data in active modules only.
+	std::map<u32, const FunctionEntry> activeFunctions;
+	std::map<u32, const LabelEntry> activeLabels;
+	std::map<u32, const DataEntry> activeData;
+
+	// This is indexed by the end address of the module.
+	std::map<u32, const ModuleEntry> activeModuleEnds;
+
+	typedef std::pair<int, u32> SymbolKey;
+
+	// These are indexed by the module id and relative address in the module.
+	std::map<SymbolKey, FunctionEntry> functions;
+	std::map<SymbolKey, LabelEntry> labels;
+	std::map<SymbolKey, DataEntry> data;
+	std::vector<ModuleEntry> modules;
+
+	mutable recursive_mutex lock_;
+	bool sawUnknownModule;
 };
 
-extern SymbolMap symbolMap;
+extern SymbolMap *g_symbolMap;
+

@@ -17,54 +17,114 @@
 
 #pragma once
 
-#include "../../Globals.h"
+#include "Common/CommonTypes.h"
+#include "Core/MIPS/MIPS.h"
 
-#define DELAYSLOT       0x00000010
-#define BAD_INSTRUCTION 0x00000020
-#define UNCONDITIONAL   0x00000040
-#define LIKELY          0x00000080
-#define IS_CONDBRANCH   0x00000100
-#define IS_JUMP         0x00000200
+struct MIPSInfo {
+	MIPSInfo() {
+		value = 0;
+	}
 
-#define IN_RS_SHIFT     0x00000400
-#define IN_RS_ADDR      0x00000800
-#define IN_RS           0x00001000
-#define IN_RT           0x00002000
-#define IN_SA           0x00004000
-#define IN_IMM16        0x00008000
-#define IN_IMM26        0x00010000
-#define IN_MEM          0x00020000
-#define IN_OTHER        0x00040000
-#define IN_FPUFLAG      0x00080000
+	explicit MIPSInfo(u64 v) : value(v) {
+	}
 
-#define OUT_RT          0x00100000
-#define OUT_RD          0x00200000
-#define OUT_RA          0x00400000
-#define OUT_MEM         0x00800000
-#define OUT_OTHER       0x01000000
-#define OUT_FPUFLAG     0x02000000
-#define OUT_EAT_PREFIX  0x04000000
+	u64 operator & (const u64 &arg) const {
+		return value & arg;
+	}
 
-#define VFPU_NO_PREFIX  0x08000000
-#define IS_VFPU         0x80000000
+	u64 value;
+};
+
+#define CONDTYPE_MASK   0x00000007
+#define CONDTYPE_EQ     0x00000001
+#define CONDTYPE_NE     0x00000002
+#define CONDTYPE_LEZ    0x00000003
+#define CONDTYPE_GTZ    0x00000004
+#define CONDTYPE_LTZ    0x00000005
+#define CONDTYPE_GEZ    0x00000006
+
+#define CONDTYPE_FPUFALSE   CONDTYPE_EQ
+#define CONDTYPE_FPUTRUE    CONDTYPE_NE
+
+// as long as the other flags are checked,
+// there is no way to misinterpret these
+// as CONDTYPE_X
+#define MEMTYPE_MASK    0x00000007ULL
+#define MEMTYPE_BYTE    0x00000001ULL
+#define MEMTYPE_HWORD   0x00000002ULL
+#define MEMTYPE_WORD    0x00000003ULL
+#define MEMTYPE_FLOAT   0x00000004ULL
+#define MEMTYPE_VQUAD   0x00000005ULL
+
+#define IS_CONDMOVE     0x00000008ULL
+#define DELAYSLOT       0x00000010ULL
+#define BAD_INSTRUCTION 0x00000020ULL
+#define LIKELY          0x00000040ULL
+#define IS_CONDBRANCH   0x00000080ULL
+#define IS_JUMP         0x00000100ULL
+
+#define IN_RS           0x00000200ULL
+#define IN_RS_ADDR      (0x00000400ULL | IN_RS)
+#define IN_RS_SHIFT     (0x00000800ULL | IN_RS)
+#define IN_RT           0x00001000ULL
+#define IN_SA           0x00002000ULL
+#define IN_IMM16        0x00004000ULL
+#define IN_IMM26        0x00008000ULL
+#define IN_MEM          0x00010000ULL
+#define IN_OTHER        0x00020000ULL
+#define IN_FPUFLAG      0x00040000ULL
+#define IN_VFPU_CC      0x00080000ULL
+
+#define OUT_RT          0x00100000ULL
+#define OUT_RD          0x00200000ULL
+#define OUT_RA          0x00400000ULL
+#define OUT_MEM         0x00800000ULL
+#define OUT_OTHER       0x01000000ULL
+#define OUT_FPUFLAG     0x02000000ULL
+#define OUT_VFPU_CC     0x04000000ULL
+#define OUT_EAT_PREFIX  0x08000000ULL
+
+#define VFPU_NO_PREFIX  0x10000000ULL
+#define IS_VFPU         0x20000000ULL
+#define IS_FPU          0x40000000ULL
+
+#define IN_FS           0x000100000000ULL
+#define IN_FT           0x000200000000ULL
+#define IN_LO           0x000400000000ULL
+#define IN_HI           0x000800000000ULL
+
+#define OUT_FD          0x001000000000ULL
+#define OUT_FS          0x002000000000ULL
+#define OUT_LO          0x004000000000ULL
+#define OUT_HI          0x008000000000ULL
+
+#define IN_VS           0x010000000000ULL
+#define IN_VT           0x020000000000ULL
+#define OUT_FT          0x040000000000ULL
+
+#define OUT_VD          0x100000000000ULL
 
 #ifndef CDECL
 #define CDECL
 #endif
 
-typedef void (CDECL *MIPSDisFunc)(u32 opcode, char *out);
-typedef void (CDECL *MIPSInterpretFunc)(u32 opcode);
+typedef void (CDECL *MIPSDisFunc)(MIPSOpcode opcode, char *out);
+typedef void (CDECL *MIPSInterpretFunc)(MIPSOpcode opcode);
 
+namespace MIPSComp {
+	class MIPSFrontendInterface;
+}
 
-void MIPSCompileOp(u32 op);
-void MIPSDisAsm(u32 op, u32 pc, char *out, bool tabsToSpaces = false);
-u32  MIPSGetInfo(u32 op);
-void MIPSInterpret(u32 op); //only for those rare ones
+void MIPSCompileOp(MIPSOpcode op, MIPSComp::MIPSFrontendInterface *jit);
+void MIPSDisAsm(MIPSOpcode op, u32 pc, char *out, bool tabsToSpaces = false);
+MIPSInfo MIPSGetInfo(MIPSOpcode op);
+void MIPSInterpret(MIPSOpcode op); //only for those rare ones
 int MIPSInterpret_RunUntil(u64 globalTicks);
-MIPSInterpretFunc MIPSGetInterpretFunc(u32 op);
+MIPSInterpretFunc MIPSGetInterpretFunc(MIPSOpcode op);
 
-int MIPSGetInstructionCycleEstimate(u32 op);
-const char *MIPSGetName(u32 op);
-
+int MIPSGetInstructionCycleEstimate(MIPSOpcode op);
+const char *MIPSGetName(MIPSOpcode op);
+const char *MIPSDisasmAt(u32 compilerPC);
 
 void FillMIPSTables();
+

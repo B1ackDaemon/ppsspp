@@ -18,18 +18,21 @@
 #pragma once
 
 #ifndef _WIN32_WINNT
-	#define _WIN32_WINNT 0x501
-#endif
+
+#if _MSC_VER < 1700
+#define _WIN32_WINNT 0x501 // Compile for XP on Visual Studio 2010 and below
+#else
+#define _WIN32_WINNT 0x600 // Compile for Vista on Visual Studio 2012 and above
+#endif // #if _MSC_VER < 1700
+
+#endif // #ifndef _WIN32_WINNT
+
 #ifndef _WIN32_IE
 #define _WIN32_IE 0x0500       // Default value is 0x0400
 #endif
 
 #define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
 
-//#define _CRT_SECURE_NO_DEPRECATE 1
-//#define _CRT_NONSTDC_NO_DEPRECATE 1
-
-#include <windows.h>
+#include "CommonWindows.h"
 #include <tchar.h>
 #include <vector>
-

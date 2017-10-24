@@ -15,40 +15,25 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#ifndef _FILEUTIL_H_
-#define _FILEUTIL_H_
+#pragma once
 
 #include <fstream>
 #include <cstdio>
 #include <string>
 #include <vector>
-#include <string.h>
 #include <time.h>
 
 #include "Common.h"
 
-// User directory indices for GetUserPath
-enum {
-  D_USER_IDX,
-	D_SCREENSHOTS_IDX,
-  D_LOGS_IDX,
-	D_CONFIG_IDX,
-  F_CONFIG_IDX,
-	F_MAINLOG_IDX,
-	NUM_PATH_INDICES
-};
-
-// No thread safe
 #ifdef _WIN32
-inline struct tm* localtime_r (const time_t *clock, struct tm *result) {
-	if (!clock || !result) return NULL;
-	memcpy(result,localtime(clock),sizeof(*result));
-	return result;
+inline struct tm* localtime_r(const time_t *clock, struct tm *result) {
+	if (localtime_s(result, clock) == 0)
+		return result;
+	return NULL;
 }
 #endif
 
-namespace File
-{
+namespace File {
 
 // FileSystem tree node/ 
 struct FSTEntry
@@ -60,23 +45,42 @@ struct FSTEntry
 	std::vector<FSTEntry> children;
 };
 
+struct FileDetails {
+	bool isDirectory;
+	u64 size;
+	uint64_t atime;
+	uint64_t mtime;
+	uint64_t ctime;
+	uint32_t access;  // st_mode & 0x1ff
+};
+
+// Mostly to handle utf-8 filenames better on Windows.
+FILE *OpenCFile(const std::string &filename, const char *mode);
+bool OpenCPPFile(std::fstream & stream, const std::string &filename, std::ios::openmode mode);
+
 // Returns true if file filename exists
 bool Exists(const std::string &filename);
 
 // Returns true if filename is a directory
 bool IsDirectory(const std::string &filename);
 
+// Returns file attributes.
+bool GetFileDetails(const std::string &filename, FileDetails *details);
+
+// Extracts the directory from a path.
+std::string GetDir(const std::string &path);
+
+// Extracts the filename from a path.
+std::string GetFilename(std::string path);
+
 // Returns struct with modification date of file
-tm GetModifTime(const std::string &filename);
+bool GetModifTime(const std::string &filename, tm &return_time);
 
 // Returns the size of filename (64bit)
-u64 GetSize(const std::string &filename);
-
-// Overloaded GetSize, accepts file descriptor
-u64 GetSize(const int fd);
+u64 GetFileSize(const std::string &filename);
 
 // Overloaded GetSize, accepts FILE*
-u64 GetSize(FILE *f);
+u64 GetFileSize(FILE *f);
 
 // Returns true if successful, or path already exists.
 bool CreateDir(const std::string &filename);
@@ -100,10 +104,6 @@ bool Copy(const std::string &srcFilename, const std::string &destFilename);
 // creates an empty file filename, returns true on success 
 bool CreateEmptyFile(const std::string &filename);
 
-// Scans the directory tree gets, starting from _Directory and adds the
-// results into parentEntry. Returns the number of files+directories found
-u32 ScanDirectoryTree(const std::string &directory, FSTEntry& parentEntry);
-
 // deletes the given directory and anything under it. Returns true on success.
 bool DeleteDirRecursively(const std::string &directory);
 
@@ -113,32 +113,18 @@ std::string GetCurrentDir();
 // Create directory and copy contents (does not overwrite existing files)
 void CopyDir(const std::string &source_path, const std::string &dest_path);
 
+// Opens ini file (cheats, texture replacements etc.)
+void openIniFile(const std::string fileName);
+
 // Set the current directory to given directory
 bool SetCurrentDir(const std::string &directory);
 
-// Returns a pointer to a string with a Dolphin data dir in the user's home
-// directory. To be used in "multi-user" mode (that is, installed).
-std::string &GetUserPath(const unsigned int DirIDX, const std::string &newPath="");
-
-// Returns the path to where the sys file are
-std::string GetSysDirectory();
-
-#ifdef __APPLE__
-std::string GetBundleDirectory();
-#endif
-
-#ifdef _WIN32
-std::string &GetExeDirectory();
-#endif
-
-bool WriteStringToFile(bool text_file, const std::string &str, const char *filename);
-bool ReadFileToString(bool text_file, const char *filename, std::string &str);
+const std::string &GetExeDirectory();
 
 // simple wrapper for cstdlib file functions to
 // hopefully will make error checking easier
 // and make forgetting an fclose() harder
-class IOFile : NonCopyable
-{
+class IOFile : NonCopyable {
 public:
 	IOFile();
 	IOFile(std::FILE* file);
@@ -197,18 +183,17 @@ public:
 
 	// clear error state
 	void Clear() {
-    m_good = true;
+		m_good = true;
 #undef clearerr
-    std::clearerr(m_file);
-  }
+		std::clearerr(m_file);
+	}
 
 private:
 	IOFile& operator=(const IOFile&) /*= delete*/;
+	IOFile(const IOFile&) /*= delete*/;
 
 	std::FILE* m_file;
 	bool m_good;
 };
 
 }  // namespace
-
-#endif

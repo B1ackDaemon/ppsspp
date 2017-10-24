@@ -19,16 +19,24 @@
 
 #include <string>
 
-#include "../System.h"
-#include "HLE.h"
-#include "sceKernel.h"
+class PointerWrap;
+class KernelObject;
 
 void __IoInit();
 void __IoDoState(PointerWrap &p);
 void __IoShutdown();
+
+struct ScePspDateTime;
+
+u32 sceIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen);
+
 u32 __IoGetFileHandleFromId(u32 id, u32 &outError);
+void __IoCopyDate(ScePspDateTime& date_out, const tm& date_in);
+
 KernelObject *__KernelFileNodeObject();
 KernelObject *__KernelDirListingObject();
 
+void Register_IoFileMgrForKernel();
 void Register_IoFileMgrForUser();
+void Register_StdioForKernel();
 void Register_StdioForUser();

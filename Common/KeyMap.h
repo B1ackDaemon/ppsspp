@@ -19,208 +19,122 @@
 
 #include <string>
 #include <map>
+#include <vector>
+#include <set>
+#include "input/input_state.h" // KeyDef, AxisPos
+#include "input/keycodes.h"     // keyboard keys
+#include "../Core/HLE/sceCtrl.h"   // psp keys
 
 #define KEYMAP_ERROR_KEY_ALREADY_USED -1
 #define KEYMAP_ERROR_UNKNOWN_KEY 0
 
+enum {
+	VIRTKEY_FIRST = 0x10000,
+	VIRTKEY_AXIS_X_MIN = 0x10000,
+	VIRTKEY_AXIS_Y_MIN = 0x10001,
+	VIRTKEY_AXIS_X_MAX = 0x10002,
+	VIRTKEY_AXIS_Y_MAX = 0x10003,
+	VIRTKEY_RAPID_FIRE = 0x10004,
+	VIRTKEY_UNTHROTTLE = 0x10005,
+	VIRTKEY_PAUSE = 0x10006,
+	VIRTKEY_SPEED_TOGGLE = 0x10007,
+	VIRTKEY_AXIS_RIGHT_X_MIN = 0x10008,
+	VIRTKEY_AXIS_RIGHT_Y_MIN = 0x10009,
+	VIRTKEY_AXIS_RIGHT_X_MAX = 0x1000a,
+	VIRTKEY_AXIS_RIGHT_Y_MAX = 0x1000b,
+	VIRTKEY_REWIND = 0x1000c,
+	VIRTKEY_SAVE_STATE = 0x1000d,
+	VIRTKEY_LOAD_STATE = 0x1000e,
+	VIRTKEY_NEXT_SLOT  = 0x1000f,
+	VIRTKEY_TOGGLE_FULLSCREEN = 0x10010,
+	VIRTKEY_ANALOG_LIGHTLY = 0x10011,
+	VIRTKEY_AXIS_SWAP = 0x10012,
+	VIRTKEY_DEVMENU = 0x10013,
+	VIRTKEY_FRAME_ADVANCE = 0x10014,
+	VIRTKEY_LAST,
+	VIRTKEY_COUNT = VIRTKEY_LAST - VIRTKEY_FIRST
+};
+
+enum DefaultMaps {
+	DEFAULT_MAPPING_KEYBOARD,
+	DEFAULT_MAPPING_PAD,
+	DEFAULT_MAPPING_X360,
+	DEFAULT_MAPPING_SHIELD,
+	DEFAULT_MAPPING_OUYA,
+	DEFAULT_MAPPING_XPERIA_PLAY,
+};
+
+const float AXIS_BIND_THRESHOLD = 0.75f;
+
+typedef std::map<int, std::vector<KeyDef>> KeyMapping;
+
 // KeyMap
-// A translation layer for
-// key assignment. Provides
-// integration with Core's
-// config state.
-// 
-// Does not handle input
-// state managment.
-// 
-// Platform ports should
-// map their platform's
-// keys to KeyMap's keys.
-// Then have KeyMap transform
-// those into psp buttons.
+// A translation layer for key assignment. Provides
+// integration with Core's config state.
+//
+// Does not handle input state managment.
+//
+// Platform ports should map their platform's keys to KeyMap's keys (NKCODE_*).
+//
+// Then have KeyMap transform those into psp buttons.
+
+class IniFile;
+
 namespace KeyMap {
-		enum Key {
-			// Lower class latin
-			KEY_q = 1, // top row
-			KEY_w,
-			KEY_e,
-			KEY_r,
-			KEY_t,
-			KEY_y,
-			KEY_u,
-			KEY_i,
-			KEY_o,
-			KEY_p,
+	extern KeyMapping g_controllerMap;
 
-			KEY_a, // mid row
-			KEY_s,
-			KEY_d,
-			KEY_f,
-			KEY_g,
-			KEY_h,
-			KEY_j,
-			KEY_k,
-			KEY_l,
+	// Key & Button names
+	struct KeyMap_IntStrPair {
+		int key;
+		std::string name;
+	};
 
-			KEY_z, // low row
-			KEY_x,
-			KEY_c,
-			KEY_v,
-			KEY_b,
-			KEY_n,
-			KEY_m,
+	// Use if you need to display the textual name
+	std::string GetKeyName(int keyCode);
+	std::string GetKeyOrAxisName(int keyCode);
+	std::string GetAxisName(int axisId);
+	std::string GetPspButtonName(int btn);
 
-			// Upper class latin
-			KEY_Q, // top row
-			KEY_W,
-			KEY_E,
-			KEY_R,
-			KEY_T,
-			KEY_Y,
-			KEY_U,
-			KEY_I,
-			KEY_O,
-			KEY_P,
+	std::vector<KeyMap_IntStrPair> GetMappableKeys();
 
-			KEY_A, // mid row
-			KEY_S,
-			KEY_D,
-			KEY_F,
-			KEY_G,
-			KEY_H,
-			KEY_J,
-			KEY_K,
-			KEY_L,
+	// Use to translate KeyMap Keys to PSP
+	// buttons. You should have already translated
+	// your platform's keys to KeyMap keys.
+	bool KeyToPspButton(int deviceId, int key, std::vector<int> *pspKeys);
+	bool KeyFromPspButton(int btn, std::vector<KeyDef> *keys);
 
-			KEY_Z, // low row
-			KEY_X,
-			KEY_C,
-			KEY_V,
-			KEY_B,
-			KEY_N,
-			KEY_M,
+	int TranslateKeyCodeToAxis(int keyCode, int &direction);
+	int TranslateKeyCodeFromAxis(int axisId, int direction);
 
+	// Configure the key mapping.
+	// Any configuration will be saved to the Core config.
+	void SetKeyMapping(int psp_key, KeyDef key, bool replace);
 
-			// Numeric
-			KEY_1,
-			KEY_2,
-			KEY_3,
-			KEY_4,
-			KEY_5,
-			KEY_6,
-			KEY_7,
-			KEY_8,
-			KEY_9,
-			KEY_0,
+	// Configure an axis mapping, saves the configuration.
+	// Direction is negative or positive.
+	void SetAxisMapping(int btn, int deviceId, int axisId, int direction, bool replace);
 
-			// Special keys
-			KEY_ARROW_LEFT,
-			KEY_ARROW_RIGHT,
-			KEY_ARROW_UP,
-			KEY_ARROW_DOWN,
+	bool AxisToPspButton(int deviceId, int axisId, int direction, std::vector<int> *pspKeys);
+	bool AxisFromPspButton(int btn, int *deviceId, int *axisId, int *direction);
+	std::string NamePspButtonFromAxis(int deviceId, int axisId, int direction);
 
-			KEY_ANALOG_LEFT,
-			KEY_ANALOG_RIGHT,
-			KEY_ANALOG_UP,
-			KEY_ANALOG_DOWN,
+	void LoadFromIni(IniFile &iniFile);
+	void SaveToIni(IniFile &iniFile);
 
-			KEY_ANALOG_ALT_LEFT,
-			KEY_ANALOG_ALT_RIGHT,
-			KEY_ANALOG_ALT_UP,
-			KEY_ANALOG_ALT_DOWN,
+	void SetDefaultKeyMap(DefaultMaps dmap, bool replace);
 
-			KEY_SPACE,
-			KEY_ENTER,
-			KEY_CTRL_LEFT,
-			KEY_CTRL_RIGHT,
-			KEY_SHIFT_LEFT,
-			KEY_SHIFT_RIGHT,
-			KEY_ALT_LEFT,
-			KEY_ALT_RIGHT,
-			KEY_BACKSPACE,
-			KEY_SUPER,
-			KEY_TAB,
+	void RestoreDefault();
 
-			// Mobile Keys
-			KEY_VOLUME_UP,
-			KEY_VOLUME_DOWN,
-			KEY_HOME,
-			KEY_CALL_START,
-			KEY_CALL_END,
+	void SwapAxis();
+	void UpdateNativeMenuKeys();
 
-			// Special PPSSPP keys
-			KEY_FASTFORWARD,
+	void NotifyPadConnected(const std::string &name);
+	bool IsNvidiaShield(const std::string &name);
+	bool IsNvidiaShieldTV(const std::string &name);
+	bool IsXperiaPlay(const std::string &name);
+	bool IsOuya(const std::string &name);
+	bool HasBuiltinController(const std::string &name);
 
-			// Extra keys
-			// Use for platform specific keys.
-			// Example: android's back btn
-			KEY_EXTRA1,
-			KEY_EXTRA2,
-			KEY_EXTRA3,
-			KEY_EXTRA4,
-			KEY_EXTRA5,
-			KEY_EXTRA6,
-			KEY_EXTRA7,
-			KEY_EXTRA8,
-			KEY_EXTRA9,
-			KEY_EXTRA0,
-
-			// TODO: Add any missing keys.
-			// Many can be found in the
-			// window's port's keyboard
-			// files.
-		};
-
-		// Use if you need to
-		// display the textual
-		// name 
-		// These functions are not
-		// fast, do not call them
-		// a million times.
-		static std::string GetKeyName(Key);
-		static std::string GetPspButtonName(int);
-
-		// Use if to translate
-		// KeyMap Keys to PSP
-		// buttons.
-		// You should have
-		// already translated
-		// your platform's keys
-		// to KeyMap keys.
-		//
-		// Returns KEYMAP_ERROR_UNKNOWN_KEY
-		// for any unmapped key
-		static int KeyToPspButton(Key);
-
-		static bool IsMappedKey(Key);
-
-		// Might be usful if you want
-		// to provide hints to users
-		// upon mapping conflicts
-		static std::string NamePspButtonFromKey(Key);
-
-		// Use for showing the existing
-		// key mapping.
-		static std::string NameKeyFromPspButton(int);
-
-		// Configure the key mapping.
-		// Any configuration will
-		// be saved to the Core
-		// config.
-		// 
-		// Returns KEYMAP_ERROR_KEY_ALREADY_USED
-		//  for mapping conflicts. 0 otherwise.
-		static int SetKeyMapping(Key, int);
-
-		// Platform specific keymaps
-		// override KeyMap's defaults.
-		// They do not override user's
-		// configuration.
-		// A platform default keymap
-		// does not need to cover
-		// all psp buttons.
-		// Any buttons missing will
-		// fallback to KeyMap's keymap.
-		static int RegisterPlatformDefaultKeyMap(std::map<int,int> *);
-		static void DeregisterPlatformDefaultKeyMap(void);
+	const std::set<std::string> &GetSeenPads();
+	void AutoConfForPad(const std::string &name);
 }
-

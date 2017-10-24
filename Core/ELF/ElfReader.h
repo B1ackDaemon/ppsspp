@@ -17,9 +17,25 @@
 
 #pragma once
 
-#include "../../Globals.h"
+#include "Common/CommonTypes.h"
 
 #include "ElfTypes.h"
+
+enum {
+	R_MIPS_NONE,
+	R_MIPS_16,
+	R_MIPS_32,
+	R_MIPS_REL32,
+	R_MIPS_26,
+	R_MIPS_HI16,
+	R_MIPS_LO16,
+	R_MIPS_GPREL16,
+	R_MIPS_LITERAL,
+	R_MIPS_GOT16,
+	R_MIPS_PC16,
+	R_MIPS_CALL16,
+	R_MIPS_GPREL32
+};
 
 enum KnownElfTypes
 {
@@ -39,7 +55,6 @@ public:
 		bRelocate(false),
 		entryPoint(0),
 		vaddr(0) {
-		INFO_LOG(LOADER, "ElfReader: %p", ptr);
 		base = (char*)ptr;
 		base32 = (u32 *)ptr;
 		header = (Elf32_Ehdr*)ptr;
@@ -57,69 +72,73 @@ public:
 	}
 
 	// Quick accessors
-	ElfType GetType() { return (ElfType)(header->e_type); }
-	ElfMachine GetMachine() { return (ElfMachine)(header->e_machine); }
-	u32 GetEntryPoint() { return entryPoint; }
-	u32 GetFlags() { return (u32)(header->e_flags); }
+	ElfType GetType() const { return (ElfType)(u16)(header->e_type); }
+	ElfMachine GetMachine() const { return (ElfMachine)(u16)(header->e_machine); }
+	u32 GetEntryPoint() const { return entryPoint; }
+	u32 GetFlags() const { return (u32)(header->e_flags); }
 
-	int GetNumSegments() { return (int)(header->e_phnum); }
-	int GetNumSections() { return (int)(header->e_shnum); }
-	const char *GetSectionName(int section);
-	u8 *GetPtr(int offset)
-	{
+	int GetNumSegments() const { return (int)(header->e_phnum); }
+	int GetNumSections() const { return (int)(header->e_shnum); }
+	const char *GetSectionName(int section) const;
+	u8 *GetPtr(u32 offset) const {
 		return (u8*)base + offset;
 	}
-	u8 *GetSectionDataPtr(int section)
-	{
+	u8 *GetSectionDataPtr(int section) const {
 		if (section < 0 || section >= header->e_shnum)
-			return 0;
+			return nullptr;
 		if (sections[section].sh_type != SHT_NOBITS)
 			return GetPtr(sections[section].sh_offset);
 		else
-			return 0;
+			return nullptr;
 	}
-	u8 *GetSegmentPtr(int segment)
-	{
+	u8 *GetSegmentPtr(int segment) const {
 		return GetPtr(segments[segment].p_offset);
 	}
-	u32 GetSectionAddr(SectionID section) {return sectionAddrs[section];}
-	int GetSectionSize(SectionID section)
-	{
+	u32 GetSectionAddr(SectionID section) const {
+		return sectionAddrs[section];
+	}
+	int GetSectionSize(SectionID section) const {
 		return sections[section].sh_size;
 	}
-	SectionID GetSectionByName(const char *name, int firstSection=0); //-1 for not found
+	SectionID GetSectionByName(const char *name, int firstSection=0) const; //-1 for not found
 
-	u32 GetSegmentPaddr(int segment)
-	{
+	u32 GetSegmentPaddr(int segment) const {
 	    return segments[segment].p_paddr;
 	}
-	u32 GetSegmentOffset(int segment)
-	{
+	u32 GetSegmentOffset(int segment) const {
 	    return segments[segment].p_offset;
 	}
-	u32 GetSegmentVaddr(int segment)
-	{
+	u32 GetSegmentVaddr(int segment) const {
 		return segmentVAddr[segment];
 	}
+	u32 GetSegmentDataSize(int segment) const {
+		return segments[segment].p_filesz;
+	}
+	u32 GetSegmentMemSize(int segment) const {
+		return segments[segment].p_memsz;
+	}
 
-	bool DidRelocate() {
+	bool DidRelocate() const {
 		return bRelocate;
 	}
 
-	u32 GetVaddr()
-	{
+	u32 GetVaddr() const {
 		return vaddr;
 	}
 
-	u32 GetTotalSize()
-	{
+	u32 GetTotalSize() const {
 		return totalSize;
 	}
 
+	u32 GetTotalTextSize() const;
+	u32 GetTotalDataSize() const;
+	u32 GetTotalSectionSizeByPrefix(const std::string &prefix) const;
+
 	// More indepth stuff:)
-	bool LoadInto(u32 vaddr);
+	int LoadInto(u32 vaddr, bool fromTop);
 	bool LoadSymbols();
-	void LoadRelocations(Elf32_Rel *rels, int numRelocs);
+	bool LoadRelocations(Elf32_Rel *rels, int numRelocs);
+	void LoadRelocations2(int rel_seg);
 
 
 private:

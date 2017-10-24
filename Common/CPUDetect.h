@@ -16,29 +16,27 @@
 // http://code.google.com/p/dolphin-emu/
 
 // Detect the cpu, so we'll know which optimizations to use
-#ifndef _CPUDETECT_H_
-#define _CPUDETECT_H_
+#pragma once
 
+#include "ppsspp_config.h"
 #include <string>
 
-enum CPUVendor
-{
+enum CPUVendor {
 	VENDOR_INTEL = 0,
 	VENDOR_AMD = 1,
 	VENDOR_ARM = 2,
 	VENDOR_OTHER = 3,
 };
 
-struct CPUInfo
-{
+struct CPUInfo {
 	CPUVendor vendor;
-	
+
 	char cpu_string[0x21];
 	char brand_string[0x41];
 	bool OS64bit;
 	bool CPU64bit;
 	bool Mode64bit;
-	
+
 	bool HTT;
 	int num_cores;
 	int logical_cpu_count;
@@ -53,10 +51,17 @@ struct CPUInfo
 	bool bLZCNT;
 	bool bSSE4A;
 	bool bAVX;
+	bool bAVX2;
+	bool bFMA;
 	bool bAES;
 	bool bLAHFSAHF64;
 	bool bLongMode;
-	
+	bool bAtom;
+	bool bBMI1;
+	bool bBMI2;
+	bool bMOVBE;
+	bool bFXSR;
+
 	// ARM specific CPUInfo
 	bool bSwp;
 	bool bHalf;
@@ -71,15 +76,28 @@ struct CPUInfo
 	bool bVFPv4;
 	bool bIDIVa;
 	bool bIDIVt;
-	bool bArmV7;  // enable MOVT, MOVW etc
 
 	// ARMv8 specific
 	bool bFP;
 	bool bASIMD;
 
+	// MIPS specific
+	bool bXBurst1;
+	bool bXBurst2;
+
+	// Quirks
+	struct {
+		// Samsung Galaxy S7 devices (Exynos 8890) have a big.LITTLE configuration where the cacheline size differs between big and LITTLE.
+		// GCC's cache clearing function would detect the cacheline size on one and keep it for later. When clearing
+		// with the wrong cacheline size on the other, that's an issue. In case we want to do something different in this
+		// situation in the future, let's keep this as a quirk, but our current code won't detect it reliably
+		// if it happens on new archs. We now use better clearing code on ARM64 that doesn't have this issue.
+		bool bExynos8890DifferingCachelineSizes;
+	} sQuirks;
+
 	// Call Detect()
 	explicit CPUInfo();
-	
+
 	// Turn the cpu info into a string we can show
 	std::string Summarize();
 
@@ -89,5 +107,3 @@ private:
 };
 
 extern CPUInfo cpu_info;
-
-#endif // _CPUDETECT_H_

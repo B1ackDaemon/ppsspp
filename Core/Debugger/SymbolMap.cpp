@@ -15,140 +15,87 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+// These functions tends to be slow in debug mode.
+// Comment this out if debugging the symbol map itself.
+#if defined(_MSC_VER) && defined(_DEBUG)
+#pragma optimize("gty", on)
+#endif
+
 #ifdef _WIN32
-#include <windows.h>
+#include "Common/CommonWindows.h"
 #include <WindowsX.h>
 #else
 #include <unistd.h>
 #endif
 
-#include <cstring>
 #include <algorithm>
 
-#include "../../Globals.h"
-#include "../../Core/MemMap.h"
-#include "SymbolMap.h"
+#include "util/text/utf8.h"
+#include "zlib.h"
+#include "Common/CommonTypes.h"
+#include "Common/FileUtil.h"
+#include "Core/MemMap.h"
+#include "Core/Debugger/SymbolMap.h"
 
-#include <vector>
-#include <map>
+#include "ext/armips/Core/Assembler.h"
 
-SymbolMap symbolMap;
+SymbolMap *g_symbolMap;
 
-//need improvement
-static u32 hasher(u32 last, u32 value)
-{
-	return __rotl(last,3) ^ value;
+void SymbolMap::SortSymbols() {
+	lock_guard guard(lock_);
+
+	AssignFunctionIndices();
 }
 
-//#define BWLINKS
-
-// TODO: This should ignore immediates of many instructions, in order to be less sensitive. If it did,
-// this could work okay.
-static u32 ComputeHash(u32 start, u32 size)
-{
-	u32 hash=0;
-	for (unsigned int i=start; i<start+size; i+=4)
-		hash = hasher(hash, Memory::Read_Instruction(i));			
-	return hash;
+void SymbolMap::Clear() {
+	lock_guard guard(lock_);
+	functions.clear();
+	labels.clear();
+	data.clear();
+	activeFunctions.clear();
+	activeLabels.clear();
+	activeData.clear();
+	activeModuleEnds.clear();
+	modules.clear();
 }
 
-void SymbolMap::SortSymbols()
-{
-  std::sort(entries.begin(), entries.end());
-}
+bool SymbolMap::LoadSymbolMap(const char *filename) {
+	Clear();  // let's not recurse the lock
 
-void SymbolMap::AnalyzeBackwards()
-{
-#ifndef BWLINKS
-	return;
+	lock_guard guard(lock_);
+
+#if defined(_WIN32) && defined(UNICODE)
+	gzFile f = gzopen_w(ConvertUTF8ToWString(filename).c_str(), "r");
 #else
-	for (int i=0; i<numEntries; i++)
-	{
-		u32 ptr = entries[i].vaddress;
-		if (ptr)
-		{
-			if (entries[i].type == ST_FUNCTION)
-			{
-				for (int a = 0; a<entries[i].size/4; a++)
-				{
-					u32 inst = CMemory::ReadUncheckedu32(ptr);
-
-					switch (inst>>26)
-					{
-					case 18:
-						{
-							if (LK) //LK
-							{
-								u32 addr;
-								if(AA)
-									addr = SignExt26(LI << 2);
-								else
-									addr = ptr + SignExt26(LI << 2);
-
-								int funNum = SymbolMap::GetSymbolNum(addr);
-								if (funNum>=0) 
-									entries[funNum].backwardLinks.push_back(ptr);
-							}
-							break;
-						}
-					default:
-						;
-					}
-
-					ptr+=4;
-				}
-			}
-		}
-	}
+	gzFile f = gzopen(filename, "r");
 #endif
-}
 
-
-void SymbolMap::ResetSymbolMap()
-{
-#ifdef BWLINKS
-	for (int i=0; i<numEntries; i++)
-	{
-		entries[i].backwardLinks.clear();
-	}
-#endif
-	entries.clear();
-}
-
-
-void SymbolMap::AddSymbol(const char *symbolname, unsigned int vaddress, size_t size, SymbolType st)
-{
-	MapEntry e;
-	strncpy(e.name, symbolname, 127);
-	e.name[127] = '\0';
-	e.vaddress = vaddress;
-	e.size = (u32)size;
-	e.type = st;
-	entries.push_back(e);
-}
-
-bool SymbolMap::LoadSymbolMap(const char *filename)
-{
-	SymbolMap::ResetSymbolMap();
-	FILE *f = fopen(filename,"r");
-	if (!f)
+	if (f == Z_NULL)
 		return false;
+
 	//char temp[256];
 	//fgets(temp,255,f); //.text section layout
 	//fgets(temp,255,f); //  Starting        Virtual
 	//fgets(temp,255,f); //  address  Size   address
 	//fgets(temp,255,f); //  -----------------------
 
-	bool started=false;
+	bool started = false;
+	bool hasModules = false;
 
-	while (!feof(f))
-	{
-		char line[512],temp[256];
-		char *p = fgets(line,512,f);
-		if(p == NULL)
+	while (!gzeof(f)) {
+		char line[512], temp[256] = {0};
+		char *p = gzgets(f, line, 512);
+		if (p == NULL)
 			break;
-		
-		if (strlen(line) < 4 || sscanf(line, "%s", temp) != 1)
+
+		// Chop any newlines off.
+		for (size_t i = strlen(line) - 1; i > 0; i--) {
+			if (line[i] == '\r' || line[i] == '\n') {
+				line[i] = '\0';
+			}
+		}
+
+		if (strlen(line) < 4 || sscanf(line, "%255s", temp) != 1)
 			continue;
 
 		if (strcmp(temp,"UNUSED")==0) continue;
@@ -169,345 +116,915 @@ bool SymbolMap::LoadSymbolMap(const char *filename)
 		if (temp[1]==']') continue;
 
 		if (!started) continue;
-		MapEntry e;
-		sscanf(line,"%08x %08x %08x %i %s",&e.address,&e.size,&e.vaddress,(int*)&e.type,e.name);
-		
-		if (e.type == ST_DATA && e.size==0)
-			e.size=4;
 
-		//e.vaddress|=0x80000000;
-		if (strcmp(e.name,".text")==0 || strcmp(e.name,".init")==0 || strlen(e.name)<=1)
-		{ 
-			;
+		u32 address = -1, size, vaddress = -1;
+		int moduleIndex = 0;
+		int typeInt;
+		SymbolType type;
+		char name[128] = {0};
+
+		if (sscanf(line, ".module %x %08x %08x %127c", (unsigned int *)&moduleIndex, &address, &size, name) >= 3) {
+			// Found a module definition.
+			ModuleEntry mod;
+			mod.index = moduleIndex;
+			strcpy(mod.name, name);
+			mod.start = address;
+			mod.size = size;
+			modules.push_back(mod);
+			hasModules = true;
+			continue;
+		}
+
+		sscanf(line, "%08x %08x %x %i %127c", &address, &size, &vaddress, &typeInt, name);
+		type = (SymbolType) typeInt;
+		if (!hasModules) {
+			if (!Memory::IsValidAddress(vaddress)) {
+				ERROR_LOG(LOADER, "Invalid address in symbol file: %08x (%s)", vaddress, name);
+				continue;
+			}
 		} else {
-			entries.push_back(e);
+			// The 3rd field is now used for the module index.
+			moduleIndex = vaddress;
+			vaddress = GetModuleAbsoluteAddr(address, moduleIndex);
+			if (!Memory::IsValidAddress(vaddress)) {
+				ERROR_LOG(LOADER, "Invalid address in symbol file: %08x (%s)", vaddress, name);
+				continue;
+			}
+		}
+
+		if (type == ST_DATA && size == 0)
+			size = 4;
+
+		if (!strcmp(name, ".text") || !strcmp(name, ".init") || strlen(name) <= 1) {
+
+		} else {
+			switch (type)
+			{
+			case ST_FUNCTION:
+				AddFunction(name, vaddress, size, moduleIndex);
+				break;
+			case ST_DATA:
+				AddData(vaddress,size,DATATYPE_BYTE, moduleIndex);
+				if (name[0] != 0)
+					AddLabel(name, vaddress, moduleIndex);
+				break;
+			case ST_NONE:
+			case ST_ALL:
+				// Shouldn't be possible.
+				break;
+			}
 		}
 	}
-	for (size_t i = 0; i < entries.size(); i++)
-		entries[i].UndecorateName();
+	gzclose(f);
+	SortSymbols();
+	return started;
+}
+
+void SymbolMap::SaveSymbolMap(const char *filename) const {
+	lock_guard guard(lock_);
+
+	// Don't bother writing a blank file.
+	if (!File::Exists(filename) && functions.empty() && data.empty()) {
+		return;
+	}
+
+#if defined(_WIN32) && defined(UNICODE)
+	gzFile f = gzopen_w(ConvertUTF8ToWString(filename).c_str(), "w9");
+#else
+	gzFile f = gzopen(filename, "w9");
+#endif
+
+	if (f == Z_NULL)
+		return;
+
+	gzprintf(f, ".text\n");
+
+	for (auto it = modules.begin(), end = modules.end(); it != end; ++it) {
+		const ModuleEntry &mod = *it;
+		gzprintf(f, ".module %x %08x %08x %s\n", mod.index, mod.start, mod.size, mod.name);
+	}
+
+	for (auto it = functions.begin(), end = functions.end(); it != end; ++it) {
+		const FunctionEntry& e = it->second;
+		gzprintf(f, "%08x %08x %x %i %s\n", e.start, e.size, e.module, ST_FUNCTION, GetLabelNameRel(e.start, e.module));
+	}
+
+	for (auto it = data.begin(), end = data.end(); it != end; ++it) {
+		const DataEntry& e = it->second;
+		gzprintf(f, "%08x %08x %x %i %s\n", e.start, e.size, e.module, ST_DATA, GetLabelNameRel(e.start, e.module));
+	}
+	gzclose(f);
+}
+
+bool SymbolMap::LoadNocashSym(const char *filename) {
+	lock_guard guard(lock_);
+	FILE *f = File::OpenCFile(filename, "r");
+	if (!f)
+		return false;
+
+	while (!feof(f)) {
+		char line[256], value[256] = {0};
+		char *p = fgets(line, 256, f);
+		if (p == NULL)
+			break;
+
+		u32 address;
+		if (sscanf(line, "%08X %255s", &address, value) != 2)
+			continue;
+		if (address == 0 && strcmp(value, "0") == 0)
+			continue;
+
+		if (value[0] == '.') {
+			// data directives
+			char* s = strchr(value, ':');
+			if (s != NULL) {
+				*s = 0;
+
+				u32 size = 0;
+				if (sscanf(s + 1, "%04X", &size) != 1)
+					continue;
+
+				if (strcasecmp(value, ".byt") == 0) {
+					AddData(address, size, DATATYPE_BYTE, 0);
+				} else if (strcasecmp(value, ".wrd") == 0) {
+					AddData(address, size, DATATYPE_HALFWORD, 0);
+				} else if (strcasecmp(value, ".dbl") == 0) {
+					AddData(address, size, DATATYPE_WORD, 0);
+				} else if (strcasecmp(value, ".asc") == 0) {
+					AddData(address, size, DATATYPE_ASCII, 0);
+				}
+			}
+		} else {				// labels
+			unsigned int size = 1;
+			char* seperator = strchr(value, ',');
+			if (seperator != NULL) {
+				*seperator = 0;
+				sscanf(seperator+1,"%08X",&size);
+			}
+
+			if (size != 1) {
+				AddFunction(value, address,size, 0);
+			} else {
+				AddLabel(value, address, 0);
+			}
+		}
+	}
+
 	fclose(f);
-	SymbolMap::SortSymbols();
-//	SymbolMap::AnalyzeBackwards();
 	return true;
 }
 
+void SymbolMap::SaveNocashSym(const char *filename) const {
+	lock_guard guard(lock_);
 
-void SymbolMap::SaveSymbolMap(const char *filename)
-{
-	FILE *f = fopen(filename,"w");
-	if (!f)
+	// Don't bother writing a blank file.
+	if (!File::Exists(filename) && functions.empty() && data.empty()) {
 		return;
-	fprintf(f,".text\n");
-	for (size_t i = 0; i < entries.size(); i++)
-	{
-		MapEntry &e = entries[i];
-		fprintf(f,"%08x %08x %08x %i %s\n",e.address,e.size,e.vaddress,e.type,e.name);
-	}
-	fclose(f);
-}
-
-int SymbolMap::GetSymbolNum(unsigned int address, SymbolType symmask)
-{
-	for (size_t i = 0, n = entries.size(); i < n; i++)
-	{
-		MapEntry &entry = entries[i];
-		unsigned int addr = entry.vaddress;
-		if (address >= addr)
-		{
-			if (address < addr + entry.size)
-			{
-				if (entries[i].type & symmask)
-					return (int) i;
-				else
-					return -1;
-			}
-		}
-		else
-			break;
-	}
-	return -1;
-}
-
-
-char descriptionTemp[256];
-
-char *SymbolMap::GetDescription(unsigned int address)
-{
-	int fun = SymbolMap::GetSymbolNum(address);
-	//if (address == entries[fun].vaddress)
-	//{
-	if (fun!=-1)
-		return entries[fun].name;
-	else
-	{
-		sprintf(descriptionTemp, "(%08x)", address);
-		return descriptionTemp;
-	}
-	//}
-	//else
-	//	return "";
-}
-
-#ifdef _WIN32
-void SymbolMap::FillSymbolListBox(HWND listbox,SymbolType symmask)
-{
-	ShowWindow(listbox,SW_HIDE);
-	ListBox_ResetContent(listbox);
-
-	//int style = GetWindowLong(listbox,GWL_STYLE);
-
-	ListBox_AddString(listbox,"(0x80000000)");
-	ListBox_SetItemData(listbox,0,0x80000000);
-
-	//ListBox_AddString(listbox,"(0x80002000)");
-	//ListBox_SetItemData(listbox,1,0x80002000);
-
-	for (size_t i = 0; i < entries.size(); i++)
-	{
-		if (entries[i].type & symmask)
-		{
-			char temp[256];
-			sprintf(temp,"%s (%d)",entries[i].name,entries[i].size);
-			int index = ListBox_AddString(listbox,temp);
-			ListBox_SetItemData(listbox,index,entries[i].vaddress);
-		}
 	}
 
-	ShowWindow(listbox,SW_SHOW);
-}
+	FILE* f = File::OpenCFile(filename, "w");
+	if (f == NULL)
+		return;
 
-void SymbolMap::FillSymbolComboBox(HWND listbox,SymbolType symmask)
-{
-	ShowWindow(listbox,SW_HIDE);
-	ComboBox_ResetContent(listbox);
-
-	//int style = GetWindowLong(listbox,GWL_STYLE);
-
-	ComboBox_AddString(listbox,"(0x02000000)");
-	ComboBox_SetItemData(listbox,0,0x02000000);
-
-	//ListBox_AddString(listbox,"(0x80002000)");
-	//ListBox_SetItemData(listbox,1,0x80002000);
-
-	for (size_t i = 0; i < entries.size(); i++)
-	{
-		if (entries[i].type & symmask)
-		{
-			char temp[256];
-			sprintf(temp,"%s (%d)",entries[i].name,entries[i].size);
-			int index = ComboBox_AddString(listbox,temp);
-			ComboBox_SetItemData(listbox,index,entries[i].vaddress);
-		}
+	// only write functions, the rest isn't really interesting
+	for (auto it = functions.begin(), end = functions.end(); it != end; ++it) {
+		const FunctionEntry& e = it->second;
+		fprintf(f, "%08X %s,%04X\n", GetModuleAbsoluteAddr(e.start,e.module),GetLabelNameRel(e.start, e.module), e.size);
 	}
 	
-	ShowWindow(listbox,SW_SHOW);
-}
-
-void SymbolMap::FillListBoxBLinks(HWND listbox, int num)
-{	
-	ListBox_ResetContent(listbox);
-		
-	int style = GetWindowLong(listbox,GWL_STYLE);
-
-	MapEntry &e = entries[num];
-#ifdef BWLINKS
-	for (int i=0; i<e.backwardLinks.size(); i++)
-	{
-		u32 addr = e.backwardLinks[i];
-		int index = ListBox_AddString(listbox,SymbolMap::GetSymbolName(SymbolMap::GetSymbolNum(addr)));
-		ListBox_SetItemData(listbox,index,addr);
-	}
-#endif
-}
-#endif
-
-int SymbolMap::GetNumSymbols()
-{
-	return (int)entries.size();
-}
-SymbolType SymbolMap::GetSymbolType(int i)
-{
-	return entries[i].type;
-}
-
-char *SymbolMap::GetSymbolName(int i)
-{
-	return entries[i].name;
-}
-void SymbolMap::SetSymbolName(int i, const char *newname)
-{
-	strcpy(entries[i].name, newname);
-}
-
-u32 SymbolMap::GetSymbolAddr(int i)
-{
-	return entries[i].vaddress;
-}
-
-u32 SymbolMap::GetSymbolSize(int i)
-{
-	return entries[i].size;
-}
-
-int SymbolMap::FindSymbol(const char *name)
-{
-	for (size_t i = 0; i < entries.size(); i++)
-		if (strcmp(entries[i].name,name)==0)
-			return (int) i;
-	return -1;
-}
-
-u32 SymbolMap::GetAddress(int num)
-{
-	return entries[num].vaddress;
-}
-
-void SymbolMap::IncreaseRunCount(int num)
-{
-	entries[num].runCount++;
-}
-
-unsigned int SymbolMap::GetRunCount(int num)
-{
-	if (num>=0)
-		return entries[num].runCount;
-	else
-		return 0;
-}
-
-// Load an elf with symbols, use SymbolMap::compilefuncsignaturesfile 
-// to make a symbol map, load a dol or somethin without symbols, then apply 
-// the map with SymbolMap::usefuncsignaturesfile.
-
-void SymbolMap::CompileFuncSignaturesFile(const char *filename)
-{
-	// Store name,length,first instruction,hash into file
-	FILE *f = fopen(filename, "w");
-	fprintf(f,"00000000\n");
-	int count=0;
-	for (size_t i = 0; i < entries.size(); i++)
-	{
-		int size = entries[i].size;
-		if (size >= 16 && entries[i].type == ST_FUNCTION)
-		{
-			u32 inst = Memory::Read_Instruction(entries[i].vaddress); //try to make a bigger number of different vals sometime
-			if (inst != 0)
-			{
-				char temp[64];
-				strncpy(temp,entries[i].name,63);
-				fprintf(f, "%08x\t%08x\t%08x\t%s\n", inst, size, ComputeHash(entries[i].vaddress,size), temp);    
-				count++;
-			}
-		}
-	}
-	fseek(f,0,SEEK_SET);
-	fprintf(f,"%08x",count);
 	fclose(f);
 }
 
+SymbolType SymbolMap::GetSymbolType(u32 address) const {
+	lock_guard guard(lock_);
+	if (activeFunctions.find(address) != activeFunctions.end())
+		return ST_FUNCTION;
+	if (activeData.find(address) != activeData.end())
+		return ST_DATA;
+	return ST_NONE;
+}
 
-struct Sig
-{
-	u32 inst;
-	u32 size;
-	u32 hash;
-	char name[64];
-	Sig(){}
-	Sig(u32 _inst, u32 _size, u32 _hash, char *_name) : inst(_inst), size(_size), hash(_hash)
+bool SymbolMap::GetSymbolInfo(SymbolInfo *info, u32 address, SymbolType symmask) const {
+	u32 functionAddress = INVALID_ADDRESS;
+	u32 dataAddress = INVALID_ADDRESS;
+
+	if (symmask & ST_FUNCTION) {
+		functionAddress = GetFunctionStart(address);
+
+		// If both are found, we always return the function, so just do that early.
+		if (functionAddress != INVALID_ADDRESS) {
+			if (info != NULL) {
+				info->type = ST_FUNCTION;
+				info->address = functionAddress;
+				info->size = GetFunctionSize(functionAddress);
+				info->moduleAddress = GetFunctionModuleAddress(functionAddress);
+			}
+
+			return true;
+		}
+	}
+
+	if (symmask & ST_DATA) {
+		dataAddress = GetDataStart(address);
+		
+		if (dataAddress != INVALID_ADDRESS) {
+			if (info != NULL) {
+				info->type = ST_DATA;
+				info->address = dataAddress;
+				info->size = GetDataSize(dataAddress);
+				info->moduleAddress = GetDataModuleAddress(dataAddress);
+			}
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+u32 SymbolMap::GetNextSymbolAddress(u32 address, SymbolType symmask) {
+	lock_guard guard(lock_);
+	const auto functionEntry = symmask & ST_FUNCTION ? activeFunctions.upper_bound(address) : activeFunctions.end();
+	const auto dataEntry = symmask & ST_DATA ? activeData.upper_bound(address) : activeData.end();
+
+	if (functionEntry == activeFunctions.end() && dataEntry == activeData.end())
+		return INVALID_ADDRESS;
+
+	u32 funcAddress = (functionEntry != activeFunctions.end()) ? functionEntry->first : 0xFFFFFFFF;
+	u32 dataAddress = (dataEntry != activeData.end()) ? dataEntry->first : 0xFFFFFFFF;
+
+	if (funcAddress <= dataAddress)
+		return funcAddress;
+	else
+		return dataAddress;
+}
+
+std::string SymbolMap::GetDescription(unsigned int address) const {
+	lock_guard guard(lock_);
+	const char* labelName = NULL;
+
+	u32 funcStart = GetFunctionStart(address);
+	if (funcStart != INVALID_ADDRESS) {
+		labelName = GetLabelName(funcStart);
+	} else {
+		u32 dataStart = GetDataStart(address);
+		if (dataStart != INVALID_ADDRESS)
+			labelName = GetLabelName(dataStart);
+	}
+
+	if (labelName != NULL)
+		return labelName;
+
+	char descriptionTemp[256];
+	sprintf(descriptionTemp, "(%08x)", address);
+	return descriptionTemp;
+}
+
+std::vector<SymbolEntry> SymbolMap::GetAllSymbols(SymbolType symmask) {
+	std::vector<SymbolEntry> result;
+
+	if (symmask & ST_FUNCTION) {
+		lock_guard guard(lock_);
+		for (auto it = activeFunctions.begin(); it != activeFunctions.end(); it++) {
+			SymbolEntry entry;
+			entry.address = it->first;
+			entry.size = GetFunctionSize(entry.address);
+			const char* name = GetLabelName(entry.address);
+			if (name != NULL)
+				entry.name = name;
+			result.push_back(entry);
+		}
+	}
+
+	if (symmask & ST_DATA) {
+		lock_guard guard(lock_);
+		for (auto it = activeData.begin(); it != activeData.end(); it++) {
+			SymbolEntry entry;
+			entry.address = it->first;
+			entry.size = GetDataSize(entry.address);
+			const char* name = GetLabelName(entry.address);
+			if (name != NULL)
+				entry.name = name;
+			result.push_back(entry);
+		}
+	}
+
+	return result;
+}
+
+void SymbolMap::AddModule(const char *name, u32 address, u32 size) {
+	lock_guard guard(lock_);
+
+	for (auto it = modules.begin(), end = modules.end(); it != end; ++it) {
+		if (!strcmp(it->name, name)) {
+			// Just reactivate that one.
+			it->start = address;
+			it->size = size;
+			activeModuleEnds.insert(std::make_pair(it->start + it->size, *it));
+			UpdateActiveSymbols();
+			return;
+		}
+	}
+
+	ModuleEntry mod;
+	strncpy(mod.name, name, ARRAY_SIZE(mod.name));
+	mod.name[ARRAY_SIZE(mod.name) - 1] = '\0';
+	mod.start = address;
+	mod.size = size;
+	mod.index = (int)modules.size() + 1;
+
+	modules.push_back(mod);
+	activeModuleEnds.insert(std::make_pair(mod.start + mod.size, mod));
+	UpdateActiveSymbols();
+}
+
+void SymbolMap::UnloadModule(u32 address, u32 size) {
+	lock_guard guard(lock_);
+	activeModuleEnds.erase(address + size);
+	UpdateActiveSymbols();
+}
+
+u32 SymbolMap::GetModuleRelativeAddr(u32 address, int moduleIndex) const {
+	lock_guard guard(lock_);
+	if (moduleIndex == -1) {
+		moduleIndex = GetModuleIndex(address);
+	}
+
+	for (auto it = modules.begin(), end = modules.end(); it != end; ++it) {
+		if (it->index == moduleIndex) {
+			return address - it->start;
+		}
+	}
+	return address;
+}
+
+u32 SymbolMap::GetModuleAbsoluteAddr(u32 relative, int moduleIndex) const {
+	lock_guard guard(lock_);
+	for (auto it = modules.begin(), end = modules.end(); it != end; ++it) {
+		if (it->index == moduleIndex) {
+			return it->start + relative;
+		}
+	}
+	return relative;
+}
+
+int SymbolMap::GetModuleIndex(u32 address) const {
+	lock_guard guard(lock_);
+	auto iter = activeModuleEnds.upper_bound(address);
+	if (iter == activeModuleEnds.end())
+		return -1;
+	return iter->second.index;
+}
+
+bool SymbolMap::IsModuleActive(int moduleIndex) const {
+	if (moduleIndex == 0) {
+		return true;
+	}
+
+	lock_guard guard(lock_);
+	for (auto it = activeModuleEnds.begin(), end = activeModuleEnds.end(); it != end; ++it) {
+		if (it->second.index == moduleIndex) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::vector<LoadedModuleInfo> SymbolMap::getAllModules() const {
+	lock_guard guard(lock_);
+
+	std::vector<LoadedModuleInfo> result;
+	for (size_t i = 0; i < modules.size(); i++) {
+		LoadedModuleInfo m;
+		m.name = modules[i].name;
+		m.address = modules[i].start;
+		m.size = modules[i].size;
+
+		u32 key = modules[i].start + modules[i].size;
+		m.active = activeModuleEnds.find(key) != activeModuleEnds.end();
+
+		result.push_back(m);
+	}
+
+	return result;
+}
+
+void SymbolMap::AddFunction(const char* name, u32 address, u32 size, int moduleIndex) {
+	lock_guard guard(lock_);
+
+	if (moduleIndex == -1) {
+		moduleIndex = GetModuleIndex(address);
+	} else if (moduleIndex == 0) {
+		sawUnknownModule = true;
+	}
+
+	// Is there an existing one?
+	u32 relAddress = GetModuleRelativeAddr(address, moduleIndex);
+	auto symbolKey = std::make_pair(moduleIndex, relAddress);
+	auto existing = functions.find(symbolKey);
+	if (sawUnknownModule && existing == functions.end()) {
+		// Fall back: maybe it's got moduleIndex = 0.
+		existing = functions.find(std::make_pair(0, address));
+	}
+
+	if (existing != functions.end()) {
+		existing->second.size = size;
+		if (existing->second.module != moduleIndex) {
+			FunctionEntry func = existing->second;
+			func.start = relAddress;
+			func.module = moduleIndex;
+			functions.erase(existing);
+			functions[symbolKey] = func;
+		}
+
+		// Refresh the active item if it exists.
+		auto active = activeFunctions.find(address);
+		if (active != activeFunctions.end() && active->second.module == moduleIndex) {
+			activeFunctions.erase(active);
+			activeFunctions.insert(std::make_pair(address, existing->second));
+		}
+	} else {
+		FunctionEntry func;
+		func.start = relAddress;
+		func.size = size;
+		func.index = (int)functions.size();
+		func.module = moduleIndex;
+		functions[symbolKey] = func;
+
+		if (IsModuleActive(moduleIndex)) {
+			activeFunctions.insert(std::make_pair(address, func));
+		}
+	}
+
+	AddLabel(name, address, moduleIndex);
+}
+
+u32 SymbolMap::GetFunctionStart(u32 address) const {
+	lock_guard guard(lock_);
+	auto it = activeFunctions.upper_bound(address);
+	if (it == activeFunctions.end()) {
+		// check last element
+		auto rit = activeFunctions.rbegin();
+		if (rit != activeFunctions.rend()) {
+			u32 start = rit->first;
+			u32 size = rit->second.size;
+			if (start <= address && start+size > address)
+				return start;
+		}
+		// otherwise there's no function that contains this address
+		return INVALID_ADDRESS;
+	}
+
+	if (it != activeFunctions.begin()) {
+		it--;
+		u32 start = it->first;
+		u32 size = it->second.size;
+		if (start <= address && start+size > address)
+			return start;
+	}
+
+	return INVALID_ADDRESS;
+}
+
+u32 SymbolMap::FindPossibleFunctionAtAfter(u32 address) const {
+	lock_guard guard(lock_);
+	auto it = activeFunctions.lower_bound(address);
+	if (it == activeFunctions.end()) {
+		return (u32)-1;
+	}
+	return it->first;
+}
+
+u32 SymbolMap::GetFunctionSize(u32 startAddress) const {
+	lock_guard guard(lock_);
+	auto it = activeFunctions.find(startAddress);
+	if (it == activeFunctions.end())
+		return INVALID_ADDRESS;
+
+	return it->second.size;
+}
+
+u32 SymbolMap::GetFunctionModuleAddress(u32 startAddress) const {
+	lock_guard guard(lock_);
+	auto it = activeFunctions.find(startAddress);
+	if (it == activeFunctions.end())
+		return INVALID_ADDRESS;
+
+	return GetModuleAbsoluteAddr(0, it->second.module);
+}
+
+int SymbolMap::GetFunctionNum(u32 address) const {
+	lock_guard guard(lock_);
+	u32 start = GetFunctionStart(address);
+	if (start == INVALID_ADDRESS)
+		return INVALID_ADDRESS;
+
+	auto it = activeFunctions.find(start);
+	if (it == activeFunctions.end())
+		return INVALID_ADDRESS;
+
+	return it->second.index;
+}
+
+void SymbolMap::AssignFunctionIndices() {
+	lock_guard guard(lock_);
+	int index = 0;
+	for (auto mod = activeModuleEnds.begin(), modend = activeModuleEnds.end(); mod != modend; ++mod) {
+		int moduleIndex = mod->second.index;
+		auto begin = functions.lower_bound(std::make_pair(moduleIndex, 0));
+		auto end = functions.upper_bound(std::make_pair(moduleIndex, 0xFFFFFFFF));
+		for (auto it = begin; it != end; ++it) {
+			it->second.index = index++;
+		}
+	}
+}
+
+void SymbolMap::UpdateActiveSymbols() {
+	// return;   (slow in debug mode)
+	lock_guard guard(lock_);
+
+	activeFunctions.clear();
+	activeLabels.clear();
+	activeData.clear();
+
+	// On startup and shutdown, we can skip the rest.  Tiny optimization.
+	if (activeModuleEnds.empty() || (functions.empty() && labels.empty() && data.empty())) {
+		return;
+	}
+
+	std::map<int, u32> activeModuleIndexes;
+	for (auto it = activeModuleEnds.begin(), end = activeModuleEnds.end(); it != end; ++it) {
+		activeModuleIndexes[it->second.index] = it->second.start;
+	}
+
+	for (auto it = functions.begin(), end = functions.end(); it != end; ++it) {
+		const auto mod = activeModuleIndexes.find(it->second.module);
+		if (it->second.module == 0) {
+			activeFunctions.insert(std::make_pair(it->second.start, it->second));
+		} else if (mod != activeModuleIndexes.end()) {
+			activeFunctions.insert(std::make_pair(mod->second + it->second.start, it->second));
+		}
+	}
+
+	for (auto it = labels.begin(), end = labels.end(); it != end; ++it) {
+		const auto mod = activeModuleIndexes.find(it->second.module);
+		if (it->second.module == 0) {
+			activeLabels.insert(std::make_pair(it->second.addr, it->second));
+		} else if (mod != activeModuleIndexes.end()) {
+			activeLabels.insert(std::make_pair(mod->second + it->second.addr, it->second));
+		}
+	}
+
+	for (auto it = data.begin(), end = data.end(); it != end; ++it) {
+		const auto mod = activeModuleIndexes.find(it->second.module);
+		if (it->second.module == 0) {
+			activeData.insert(std::make_pair(it->second.start, it->second));
+		} else if (mod != activeModuleIndexes.end()) {
+			activeData.insert(std::make_pair(mod->second + it->second.start, it->second));
+		}
+	}
+
+	AssignFunctionIndices();
+}
+
+bool SymbolMap::SetFunctionSize(u32 startAddress, u32 newSize) {
+	lock_guard guard(lock_);
+
+	auto funcInfo = activeFunctions.find(startAddress);
+	if (funcInfo != activeFunctions.end()) {
+		auto symbolKey = std::make_pair(funcInfo->second.module, funcInfo->second.start);
+		auto func = functions.find(symbolKey);
+		if (func != functions.end()) {
+			func->second.size = newSize;
+			UpdateActiveSymbols();
+		}
+	}
+
+	// TODO: check for overlaps
+	return true;
+}
+
+bool SymbolMap::RemoveFunction(u32 startAddress, bool removeName) {
+	lock_guard guard(lock_);
+
+	auto it = activeFunctions.find(startAddress);
+	if (it == activeFunctions.end())
+		return false;
+
+	auto symbolKey = std::make_pair(it->second.module, it->second.start);
+	auto it2 = functions.find(symbolKey);
+	if (it2 != functions.end()) {
+		functions.erase(it2);
+	}
+	activeFunctions.erase(it);
+
+	if (removeName) {
+		auto labelIt = activeLabels.find(startAddress);
+		if (labelIt != activeLabels.end()) {
+			symbolKey = std::make_pair(labelIt->second.module, labelIt->second.addr);
+			auto labelIt2 = labels.find(symbolKey);
+			if (labelIt2 != labels.end()) {
+				labels.erase(labelIt2);
+			}
+			activeLabels.erase(labelIt);
+		}
+	}
+
+	return true;
+}
+
+void SymbolMap::AddLabel(const char* name, u32 address, int moduleIndex) {
+	lock_guard guard(lock_);
+
+	if (moduleIndex == -1) {
+		moduleIndex = GetModuleIndex(address);
+	} else if (moduleIndex == 0) {
+		sawUnknownModule = true;
+	}
+
+	// Is there an existing one?
+	u32 relAddress = GetModuleRelativeAddr(address, moduleIndex);
+	auto symbolKey = std::make_pair(moduleIndex, relAddress);
+	auto existing = labels.find(symbolKey);
+	if (sawUnknownModule && existing == labels.end()) {
+		// Fall back: maybe it's got moduleIndex = 0.
+		existing = labels.find(std::make_pair(0, address));
+	}
+
+	if (existing != labels.end()) {
+		// We leave an existing label alone, rather than overwriting.
+		// But we'll still upgrade it to the correct module / relative address.
+		if (existing->second.module != moduleIndex) {
+			LabelEntry label = existing->second;
+			label.addr = relAddress;
+			label.module = moduleIndex;
+			labels.erase(existing);
+			labels[symbolKey] = label;
+
+			// Refresh the active item if it exists.
+			auto active = activeLabels.find(address);
+			if (active != activeLabels.end() && active->second.module == moduleIndex) {
+				activeLabels.erase(active);
+				activeLabels.insert(std::make_pair(address, label));
+			}
+		}
+	} else {
+		LabelEntry label;
+		label.addr = relAddress;
+		label.module = moduleIndex;
+		strncpy(label.name, name, 128);
+		label.name[127] = 0;
+
+		labels[symbolKey] = label;
+		if (IsModuleActive(moduleIndex)) {
+			activeLabels.insert(std::make_pair(address, label));
+		}
+	}
+}
+
+void SymbolMap::SetLabelName(const char* name, u32 address) {
+	lock_guard guard(lock_);
+	auto labelInfo = activeLabels.find(address);
+	if (labelInfo == activeLabels.end()) {
+		AddLabel(name, address);
+	} else {
+		auto symbolKey = std::make_pair(labelInfo->second.module, labelInfo->second.addr);
+		auto label = labels.find(symbolKey);
+		if (label != labels.end()) {
+			strncpy(label->second.name, name, 128);
+			label->second.name[127] = 0;
+
+			// Refresh the active item if it exists.
+			auto active = activeLabels.find(address);
+			if (active != activeLabels.end() && active->second.module == label->second.module) {
+				activeLabels.erase(active);
+				activeLabels.insert(std::make_pair(address, label->second));
+			}
+		}
+	}
+}
+
+const char *SymbolMap::GetLabelName(u32 address) const {
+	lock_guard guard(lock_);
+	auto it = activeLabels.find(address);
+	if (it == activeLabels.end())
+		return NULL;
+
+	return it->second.name;
+}
+
+const char *SymbolMap::GetLabelNameRel(u32 relAddress, int moduleIndex) const {
+	lock_guard guard(lock_);
+	auto it = labels.find(std::make_pair(moduleIndex, relAddress));
+	if (it == labels.end())
+		return NULL;
+
+	return it->second.name;
+}
+
+std::string SymbolMap::GetLabelString(u32 address) const {
+	lock_guard guard(lock_);
+	const char *label = GetLabelName(address);
+	if (label == NULL)
+		return "";
+	return label;
+}
+
+bool SymbolMap::GetLabelValue(const char* name, u32& dest) {
+	lock_guard guard(lock_);
+	for (auto it = activeLabels.begin(); it != activeLabels.end(); it++) {
+		if (strcasecmp(name, it->second.name) == 0) {
+			dest = it->first;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void SymbolMap::AddData(u32 address, u32 size, DataType type, int moduleIndex) {
+	lock_guard guard(lock_);
+
+	if (moduleIndex == -1) {
+		moduleIndex = GetModuleIndex(address);
+	} else if (moduleIndex == 0) {
+		sawUnknownModule = true;
+	}
+
+	// Is there an existing one?
+	u32 relAddress = GetModuleRelativeAddr(address, moduleIndex);
+	auto symbolKey = std::make_pair(moduleIndex, relAddress);
+	auto existing = data.find(symbolKey);
+	if (sawUnknownModule && existing == data.end()) {
+		// Fall back: maybe it's got moduleIndex = 0.
+		existing = data.find(std::make_pair(0, address));
+	}
+
+	if (existing != data.end()) {
+		existing->second.size = size;
+		existing->second.type = type;
+		if (existing->second.module != moduleIndex) {
+			DataEntry entry = existing->second;
+			entry.module = moduleIndex;
+			entry.start = relAddress;
+			data.erase(existing);
+			data[symbolKey] = entry;
+		}
+
+		// Refresh the active item if it exists.
+		auto active = activeData.find(address);
+		if (active != activeData.end() && active->second.module == moduleIndex) {
+			activeData.erase(active);
+			activeData.insert(std::make_pair(address, existing->second));
+		}
+	} else {
+		DataEntry entry;
+		entry.start = relAddress;
+		entry.size = size;
+		entry.type = type;
+		entry.module = moduleIndex;
+
+		data[symbolKey] = entry;
+		if (IsModuleActive(moduleIndex)) {
+			activeData.insert(std::make_pair(address, entry));
+		}
+	}
+}
+
+u32 SymbolMap::GetDataStart(u32 address) const {
+	lock_guard guard(lock_);
+	auto it = activeData.upper_bound(address);
+	if (it == activeData.end())
 	{
-		strncpy(name,_name,63);
+		// check last element
+		auto rit = activeData.rbegin();
+
+		if (rit != activeData.rend())
+		{
+			u32 start = rit->first;
+			u32 size = rit->second.size;
+			if (start <= address && start+size > address)
+				return start;
+		}
+		// otherwise there's no data that contains this address
+		return INVALID_ADDRESS;
 	}
-	bool operator <(const Sig &other) const {
-		return inst < other.inst;
+
+	if (it != activeData.begin()) {
+		it--;
+		u32 start = it->first;
+		u32 size = it->second.size;
+		if (start <= address && start+size > address)
+			return start;
 	}
+
+	return INVALID_ADDRESS;
+}
+
+u32 SymbolMap::GetDataSize(u32 startAddress) const {
+	lock_guard guard(lock_);
+	auto it = activeData.find(startAddress);
+	if (it == activeData.end())
+		return INVALID_ADDRESS;
+	return it->second.size;
+}
+
+u32 SymbolMap::GetDataModuleAddress(u32 startAddress) const {
+	lock_guard guard(lock_);
+	auto it = activeData.find(startAddress);
+	if (it == activeData.end())
+		return INVALID_ADDRESS;
+	return GetModuleAbsoluteAddr(0, it->second.module);
+}
+
+DataType SymbolMap::GetDataType(u32 startAddress) const {
+	lock_guard guard(lock_);
+	auto it = activeData.find(startAddress);
+	if (it == activeData.end())
+		return DATATYPE_NONE;
+	return it->second.type;
+}
+
+void SymbolMap::GetLabels(std::vector<LabelDefinition> &dest) const
+{
+	lock_guard guard(lock_);
+	for (auto it = activeLabels.begin(); it != activeLabels.end(); it++) {
+		LabelDefinition entry;
+		entry.value = it->first;
+		entry.name = ConvertUTF8ToWString(it->second.name);
+		dest.push_back(entry);
+	}
+}
+
+#if defined(_WIN32)
+
+struct DefaultSymbol {
+	u32 address;
+	const char* name;
 };
 
-std::vector<Sig> sigs;
+static const DefaultSymbol defaultSymbols[]= {
+	{ 0x08800000,	"User memory" },
+	{ 0x08804000,	"Default load address" },
+	{ 0x04000000,	"VRAM" },
+	{ 0x88000000,	"Kernel memory" },
+	{ 0x00010000,	"Scratchpad" },
+};
 
-typedef std::map <u32,Sig *> Sigmap;
-Sigmap sigmap;
+void SymbolMap::FillSymbolListBox(HWND listbox,SymbolType symType) const {
+	wchar_t temp[256];
+	lock_guard guard(lock_);
 
-void SymbolMap::UseFuncSignaturesFile(const char *filename, u32 maxAddress)
-{
-	sigs.clear();
-	//SymbolMap::ResetSymbolMap();
-	//#1: Read the signature file and put them in a fast data structure
-	FILE *f = fopen(filename, "r");
-	int count;
-	if (fscanf(f, "%08x\n", &count) != 1)
-		count = 0;
-	char name[256];
-	for (int a=0; a<count; a++)
-	{
-		u32 inst, size, hash;
-		if (fscanf(f,"%08x\t%08x\t%08x\t%s\n",&inst,&size,&hash,name)!=EOF)
-			sigs.push_back(Sig(inst,size,hash,name));
-		else
-			break;
-	}
-	size_t numSigs = sigs.size();
-	fclose(f);
-	std::sort(sigs.begin(), sigs.end());
+	SendMessage(listbox, WM_SETREDRAW, FALSE, 0);
+	ListBox_ResetContent(listbox);
 
-	f = fopen("C:\\mojs.txt", "w");
-	fprintf(f,"00000000\n");
-	for (size_t j=0; j<numSigs; j++)
-		fprintf(f, "%08x\t%08x\t%08x\t%s\n", sigs[j].inst, sigs[j].size, sigs[j].hash, sigs[j].name);    
-	fseek(f,0,SEEK_SET);
-	fprintf(f,"%08x", (unsigned int)numSigs);
-	fclose(f);
-
-	u32 last = 0xc0d3babe;
-	for (size_t i=0; i<numSigs; i++)
-	{
-		if (sigs[i].inst != last)
+	switch (symType) {
+	case ST_FUNCTION:
 		{
-			sigmap.insert(Sigmap::value_type(sigs[i].inst, &sigs[i]));
-			last = sigs[i].inst;
-		}
-	}
+			SendMessage(listbox, LB_INITSTORAGE, (WPARAM)activeFunctions.size(), (LPARAM)activeFunctions.size() * 30);
 
-	//#2: Scan/hash the memory and locate functions
-	char temp[256];
-	u32 lastAddr=0;
-	for (u32 addr = 0x80000000; addr<maxAddress; addr+=4)
-	{
-		if ((addr&0xFFFF0000) != (lastAddr&0xFFFF0000))
-		{
-			sprintf(temp,"Scanning: %08x",addr);
-			lastAddr=addr;
-		}
-		u32 inst = Memory::Read_Instruction(addr);
-		if (!inst) 
-			continue;
-
-		Sigmap::iterator iter = sigmap.find(inst);
-		if (iter != sigmap.end())
-		{
-			Sig *sig = iter->second;
-			while (true)
-			{
-				if (sig->inst != inst)
-					break;
-
-				u32 hash = ComputeHash(addr,sig->size);				
-				if (hash==sig->hash)
-				{
-					//MATCH!!!!
-					MapEntry e;
-					e.address=addr;
-					e.size= sig->size;
-					e.vaddress = addr;
-					e.type=ST_FUNCTION;
-					strcpy(e.name,sig->name);
-					addr+=sig->size-4; //don't need to check function interior
-					entries.push_back(e);
-					break;
-				}
-				sig++;
+			for (auto it = activeFunctions.begin(), end = activeFunctions.end(); it != end; ++it) {
+				const FunctionEntry& entry = it->second;
+				const char* name = GetLabelName(it->first);
+				if (name != NULL)
+					wsprintf(temp, L"%S", name);
+				else
+					wsprintf(temp, L"0x%08X", it->first);
+				int index = ListBox_AddString(listbox,temp);
+				ListBox_SetItemData(listbox,index,it->first);
 			}
 		}
+		break;
+
+	case ST_DATA:
+		{
+			int count = ARRAYSIZE(defaultSymbols)+(int)activeData.size();
+			SendMessage(listbox, LB_INITSTORAGE, (WPARAM)count, (LPARAM)count * 30);
+
+			for (int i = 0; i < ARRAYSIZE(defaultSymbols); i++) {
+				wsprintf(temp, L"0x%08X (%S)", defaultSymbols[i].address, defaultSymbols[i].name);
+				int index = ListBox_AddString(listbox,temp);
+				ListBox_SetItemData(listbox,index,defaultSymbols[i].address);
+			}
+
+			for (auto it = activeData.begin(), end = activeData.end(); it != end; ++it) {
+				const DataEntry& entry = it->second;
+				const char* name = GetLabelName(it->first);
+
+				if (name != NULL)
+					wsprintf(temp, L"%S", name);
+				else
+					wsprintf(temp, L"0x%08X", it->first);
+
+				int index = ListBox_AddString(listbox,temp);
+				ListBox_SetItemData(listbox,index,it->first);
+			}
+		}
+		break;
 	}
-	//ensure code coloring even if symbols were loaded before
-	SymbolMap::SortSymbols();
+
+	SendMessage(listbox, WM_SETREDRAW, TRUE, 0);
+	RedrawWindow(listbox, NULL, NULL, RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
+
+#endif

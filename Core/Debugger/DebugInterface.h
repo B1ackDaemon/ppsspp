@@ -16,10 +16,17 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #pragma once
+#include <string>
 #include <cstdio>
 #include "Common/CommonTypes.h"
+#include "math/expression_parser.h"
 
 struct MemMap;
+
+enum {
+	GPR_SIZE_32,
+	GPR_SIZE_64,
+};
 
 class DebugInterface
 {
@@ -39,8 +46,15 @@ public:
 	virtual void step() {}
 	virtual void runToBreakpoint() {}
 	virtual int getColor(unsigned int address){return 0xFFFFFFFF;}
-	virtual const char *getDescription(unsigned int address) {return "";}
+	virtual std::string getDescription(unsigned int address) {return "";}
+	virtual bool initExpression(const char* exp, PostfixExpression& dest) { return false; };
+	virtual bool parseExpression(PostfixExpression& exp, u32& dest) { return false; };
 
+	
+	virtual u32 GetHi() { return 0; };
+	virtual u32 GetLo() { return 0; };
+	virtual void SetHi(u32 val) { };
+	virtual void SetLo(u32 val) { };
 	virtual const char *GetName() = 0;
 	virtual int GetGPRSize() = 0; //32 or 64
 	virtual u32 GetGPR32Value(int reg) {return 0;}
@@ -57,7 +71,7 @@ public:
 	virtual const char *GetRegName(int cat, int index) {return 0;}
 	virtual void PrintRegValue(int cat, int index, char *out)
 	{
-		sprintf(out,"%08x",GetGPR32Value(index));
+		sprintf(out,"%08X",GetGPR32Value(index));
 	}
 	virtual u32 GetRegValue(int cat, int index) {return 0;}
 	virtual void SetRegValue(int cat, int index, u32 value) {}

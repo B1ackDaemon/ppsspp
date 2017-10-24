@@ -15,25 +15,27 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "MIPS.h"
-#include "MIPSTables.h"
-#include "MIPSCodeUtils.h"
-#include "../Host.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MIPSTables.h"
+#include "Core/MIPS/MIPSCodeUtils.h"
+#include "Core/Host.h"
+#include "Core/MemMap.h"
 
 namespace MIPSCodeUtils
 {
 
-#define FULLOP_JR_RA 0x03e00008
 #define OP_SYSCALL   0x0000000c
 #define OP_SYSCALL_MASK 0xFC00003F
+#define _RS   ((op>>21) & 0x1F)
+#define _RT   ((op>>16) & 0x1F)
 
 	u32 GetJumpTarget(u32 addr)
 	{
-		u32 op = Memory::Read_Instruction(addr);
-		if (op)
+		MIPSOpcode op = Memory::Read_Instruction(addr, true);
+		if (op != 0)
 		{
-			op &= 0xFC000000;
-			if (op == 0x0C000000 || op == 0x08000000) //jal
+			MIPSInfo info = MIPSGetInfo(op);
+			if ((info & IS_JUMP) && (info & IN_IMM26))
 			{
 				u32 target = (addr & 0xF0000000) | ((op&0x03FFFFFF) << 2);
 				return target;
@@ -47,16 +49,38 @@ namespace MIPSCodeUtils
 
 	u32 GetBranchTarget(u32 addr)
 	{
-		u32 op = Memory::Read_Instruction(addr);
-		if (op)
+		MIPSOpcode op = Memory::Read_Instruction(addr, true);
+		if (op != 0)
 		{
-			u32 info = MIPSGetInfo(op);
+			MIPSInfo info = MIPSGetInfo(op);
 			if (info & IS_CONDBRANCH)
 			{
-				return addr + ((signed short)(op&0xFFFF)<<2);
+				return addr + 4 + ((signed short)(op&0xFFFF)<<2);
 			}
 			else
-				return INVALIDTARGET;	
+				return INVALIDTARGET;
+		}
+		else
+			return INVALIDTARGET;
+	}
+
+	u32 GetBranchTargetNoRA(u32 addr)
+	{
+		MIPSOpcode op = Memory::Read_Instruction(addr, true);
+		return GetBranchTargetNoRA(addr, op);
+	}
+
+	u32 GetBranchTargetNoRA(u32 addr, MIPSOpcode op)
+	{
+		if (op != 0)
+		{
+			MIPSInfo info = MIPSGetInfo(op);
+			if ((info & IS_CONDBRANCH) && !(info & OUT_RA))
+			{
+				return addr + 4 + ((signed short)(op&0xFFFF)<<2);
+			}
+			else
+				return INVALIDTARGET;
 		}
 		else
 			return INVALIDTARGET;
@@ -64,15 +88,46 @@ namespace MIPSCodeUtils
 
 	u32 GetSureBranchTarget(u32 addr)
 	{
-		u32 op = Memory::Read_Instruction(addr);
-		if (op)
+		MIPSOpcode op = Memory::Read_Instruction(addr, true);
+		if (op != 0)
 		{
-			u32 info = MIPSGetInfo(op);
-			if (info & IS_CONDBRANCH)
+			MIPSInfo info = MIPSGetInfo(op);
+			if ((info & IS_CONDBRANCH) && !(info & (IN_FPUFLAG | IS_VFPU)))
 			{
-				//TODO: safer check
-				if ((op & 0xFFFF0000) == 0x10000000)
-					return addr + ((signed short)(op&0xFFFF)<<2);
+				bool sure;
+				bool takeBranch;
+				switch (info & CONDTYPE_MASK)
+				{
+				case CONDTYPE_EQ:
+					sure = _RS == _RT;
+					takeBranch = true;
+					break;
+
+				case CONDTYPE_NE:
+					sure = _RS == _RT;
+					takeBranch = false;
+					break;
+
+				case CONDTYPE_LEZ:
+				case CONDTYPE_GEZ:
+					sure = _RS == 0;
+					takeBranch = true;
+					break;
+
+				case CONDTYPE_LTZ:
+				case CONDTYPE_GTZ:
+					sure = _RS == 0;
+					takeBranch = false;
+					break;
+
+				default:
+					sure = false;
+				}
+
+				if (sure && takeBranch)
+					return addr + 4 + ((signed short)(op&0xFFFF)<<2);
+				else if (sure && !takeBranch)
+					return addr + 8;
 				else
 					return INVALIDTARGET;
 			}
@@ -82,4 +137,14 @@ namespace MIPSCodeUtils
 		else
 			return INVALIDTARGET;
 	}
+
+	bool IsVFPUBranch(MIPSOpcode op) {
+		return (MIPSGetInfo(op) & (IS_VFPU | IS_CONDBRANCH)) == (IS_VFPU | IS_CONDBRANCH);
+	}
+
+	bool IsBranch(MIPSOpcode op) {
+		return (MIPSGetInfo(op) & IS_CONDBRANCH) == IS_CONDBRANCH;
+	}
+
+
 }

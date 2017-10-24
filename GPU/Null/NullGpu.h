@@ -17,37 +17,43 @@
 
 #pragma once
 
-#include "../GPUCommon.h"
+#include "GPU/GPUState.h"
+#include "GPU/GPUCommon.h"
 
-class ShaderManager;
+class ShaderManagerGLES;
 
-class NullGPU : public GPUCommon
-{
+class NullGPU : public GPUCommon {
 public:
 	NullGPU();
 	~NullGPU();
-	virtual void InitClear() {}
-	virtual void ExecuteOp(u32 op, u32 diff);
-	virtual u32  DrawSync(int mode);
+	void InitClear() override {}
+	void ExecuteOp(u32 op, u32 diff) override;
 
-	virtual void BeginFrame() {}
-	virtual void SetDisplayFramebuffer(u32 framebuf, u32 stride, int format) {}
-	virtual void CopyDisplayToOutput() {}
-	virtual void UpdateStats();
-	virtual void InvalidateCache(u32 addr, int size);
-	virtual void InvalidateCacheHint(u32 addr, int size);
-	virtual void ClearCacheNextFrame() {};
-	virtual void Flush() {}
+	void BeginFrame() override {}
+	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override {}
+	void CopyDisplayToOutput() override {}
+	void GetStats(char *buffer, size_t bufsize) override;
+	void InvalidateCache(u32 addr, int size, GPUInvalidationType type) override;
+	void NotifyVideoUpload(u32 addr, int size, int width, int format) override;
+	bool PerformMemoryCopy(u32 dest, u32 src, int size) override;
+	bool PerformMemorySet(u32 dest, u8 v, int size) override;
+	bool PerformMemoryDownload(u32 dest, int size) override;
+	bool PerformMemoryUpload(u32 dest, int size) override;
+	bool PerformStencilUpload(u32 dest, int size) override;
+	void ClearCacheNextFrame() override {}
 
-	virtual void DeviceLost() {}
-	virtual void DumpNextFrame() {}
+	void DeviceLost() override {}
+	void DeviceRestore() override {}
+	void DumpNextFrame() override {}
 
-	virtual void Resized() {}
-	virtual void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) {
+	void Resized() override {}
+	void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) override {
 		primaryInfo = "NULL";
 		fullInfo = "NULL";
 	}
 
+	bool FramebufferReallyDirty() override;
+
 protected:
-	virtual void FastRunLoop(DisplayList &list);
+	void FastRunLoop(DisplayList &list) override;
 };

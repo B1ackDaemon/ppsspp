@@ -17,65 +17,83 @@
 
 #pragma once
 
-#include "../../Globals.h"
+#include "Common/CommonTypes.h"
+#include "Core/HLE/HLE.h"
+#include "Core/MemMap.h"
 
 // For easy parameter parsing and return value processing.
 
 // 64bit wrappers
+// 64bit values are always "aligned" in regs (never start on an odd reg.)
 
 template<u64 func()> void WrapU64_V() {
 	u64 retval = func();
-	currentMIPS->r[2] = retval & 0xFFFFFFFF;
-	currentMIPS->r[3] = (retval >> 32) & 0xFFFFFFFF;
+	RETURN64(retval);
 }
 
 template<u64 func(u32)> void WrapU64_U() {
 	u64 retval = func(PARAM(0));
-	currentMIPS->r[2] = retval & 0xFFFFFFFF;
-	currentMIPS->r[3] = (retval >> 32) & 0xFFFFFFFF;
+	RETURN64(retval);
+}
+
+template<u64 func(int)> void WrapU64_I() {
+	u64 retval = func(PARAM(0));
+	RETURN64(retval);
+}
+
+template<u64 func(u32, u64)> void WrapU64_UU64() {
+	u64 retval = func(PARAM(0), PARAM64(2));
+	RETURN64(retval);
+}
+
+template<u64 func(int, u64)> void WrapU64_IU64() {
+	u64 retval = func(PARAM(0), PARAM64(2));
+	RETURN64(retval);
+}
+
+template<int func(int, u64)> void WrapI_IU64() {
+	int retval = func(PARAM(0), PARAM64(2));
+	RETURN(retval);
 }
 
 template<int func(u32, u64)> void WrapI_UU64() {
-	u64 param_one = currentMIPS->r[6];
-	param_one |= (u64)(currentMIPS->r[7]) << 32;
-	int retval = func(PARAM(0), param_one);
+	int retval = func(PARAM(0), PARAM64(2));
 	RETURN(retval);
 }
 
 template<u32 func(u32, u64)> void WrapU_UU64() {
-	u64 param_one = currentMIPS->r[6];
-	param_one |= (u64)(currentMIPS->r[7]) << 32;
-	u32 retval = func(PARAM(0), param_one);
+	u32 retval = func(PARAM(0), PARAM64(2));
 	RETURN(retval);
 }
 
 template<int func(u32, u32, u64)> void WrapI_UUU64() {
-	u64 param_two = currentMIPS->r[6];
-	param_two |= (u64)(currentMIPS->r[7]) << 32;
-	int retval = func(PARAM(0), PARAM(1), param_two);
+	int retval = func(PARAM(0), PARAM(1), PARAM64(2));
 	RETURN(retval);
 }
 
 template<u32 func(int, s64, int)> void WrapU_II64I() {
-	s64 param_one = currentMIPS->r[6];
-	param_one |= (s64)(currentMIPS->r[7]) << 32;
-	u32 retval = func(PARAM(0), param_one, PARAM(4));
+	u32 retval = func(PARAM(0), PARAM64(2), PARAM(4));
 	RETURN(retval);
 }
 
 template<u32 func(u32, u64, u32, u32)> void WrapU_UU64UU() {
-	u64 param_one = currentMIPS->r[6];
-	param_one |= (u64)(currentMIPS->r[7]) << 32;
-	u32 retval = func(PARAM(0), param_one, PARAM(4), PARAM(5));
+	u32 retval = func(PARAM(0), PARAM64(2), PARAM(4), PARAM(5));
+	RETURN(retval);
+}
+
+template<u32 func(int, u64, u32, u32)> void WrapU_IU64UU() {
+	u32 retval = func(PARAM(0), PARAM64(2), PARAM(4), PARAM(5));
+	RETURN(retval);
+}
+
+template<int func(int, int, const char*, u64)> void WrapI_IICU64() {
+	int retval = func(PARAM(0), PARAM(1), Memory::GetCharPointer(PARAM(2)), PARAM64(4));
 	RETURN(retval);
 }
 
 template<s64 func(int, s64, int)> void WrapI64_II64I() {
-	s64 param_one = currentMIPS->r[6];
-	param_one |= (s64)(currentMIPS->r[7]) << 32;
-	s64 retval = func(PARAM(0), param_one, PARAM(4));
-	currentMIPS->r[2] = (retval >> 0) & 0xFFFFFFFF;
-	currentMIPS->r[3] = (retval >> 32) & 0xFFFFFFFF;
+	s64 retval = func(PARAM(0), PARAM64(2), PARAM(4));
+	RETURN64(retval);
 }
 
 //32bit wrappers
@@ -89,6 +107,48 @@ template<u32 func()> void WrapU_V() {
 
 template<u32 func(int, void *, int)> void WrapU_IVI() {
 	u32 retval = func(PARAM(0), Memory::GetPointer(PARAM(1)), PARAM(2));
+	RETURN(retval);
+}
+
+template<int func(const char *, int, int, u32)> void WrapI_CIIU() {
+	u32 retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
+template<int func(int, const char *, u32, void *, void *, u32, int)> void WrapI_ICUVVUI() {
+	u32 retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)), PARAM(2), Memory::GetPointer(PARAM(3)),Memory::GetPointer(PARAM(4)), PARAM(5), PARAM(6) );
+	RETURN(retval);
+}
+
+// Hm, do so many params get passed in registers?
+template<int func(const char *, int, const char *, int, int, int, int, int)> void WrapI_CICIIIII() {
+	u32 retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), Memory::GetCharPointer(PARAM(2)),
+		PARAM(3), PARAM(4), PARAM(5), PARAM(6), PARAM(7));
+	RETURN(retval);
+}
+
+// Hm, do so many params get passed in registers?
+template<int func(const char *, int, int, int, int, int, int)> void WrapI_CIIIIII() {
+	u32 retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2),
+		PARAM(3), PARAM(4), PARAM(5), PARAM(6));
+	RETURN(retval);
+}
+
+// Hm, do so many params get passed in registers?
+template<int func(int, int, int, int, int, int, u32)> void WrapI_IIIIIIU() {
+	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4), PARAM(5), PARAM(6));
+	RETURN(retval);
+}
+
+// Hm, do so many params get passed in registers?
+template<int func(int, int, int, int, int, int, int, int, u32)> void WrapI_IIIIIIIIU() {
+	u32 param8 = *(u32*)Memory::GetPointer(currentMIPS->r[29]); //Fixed 9th parameter, thanks to Kingcom
+	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4), PARAM(5), PARAM(6), PARAM(7), param8);
+	RETURN(retval);
+}
+
+template<u32 func(int, void *)> void WrapU_IV() {
+	u32 retval = func(PARAM(0), Memory::GetPointer(PARAM(1)));
 	RETURN(retval);
 }
 
@@ -138,7 +198,7 @@ template<int func(u32, u32)> void WrapI_UU() {
 
 template<int func(u32, float, float)> void WrapI_UFF() {
 	// Not sure about the float arguments.
-	int retval = func(PARAM(0), currentMIPS->f[12], currentMIPS->f[13]);
+	int retval = func(PARAM(0), PARAMF(0), PARAMF(1));
 	RETURN(retval);
 }
 
@@ -212,6 +272,11 @@ template<int func(u32, const char *)> void WrapI_UC() {
 	RETURN(retval);
 }
 
+template<int func(u32, const char *, int)> void WrapI_UCI() {
+	int retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)), PARAM(2));
+	RETURN(retval);
+}
+
 template<u32 func(u32, int , int , int, int, int)> void WrapU_UIIIII() {
 	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4), PARAM(5));
 	RETURN(retval);
@@ -256,7 +321,17 @@ template<u32 func(u32, int, u32, int, int)> void WrapU_UIUII() {
 	RETURN(retval);
 }
 
+template<int func(u32, int, u32, int, int)> void WrapI_UIUII() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4));
+	RETURN(retval);
+}
+
 template<u32 func(u32, int, u32, int)> void WrapU_UIUI() {
+	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
+template<int func(u32, int, u32, int)> void WrapI_UIUI() {
 	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
 	RETURN(retval);
 }
@@ -276,8 +351,23 @@ template<u32 func(u32, int, int)> void WrapU_UII() {
 	RETURN(retval);
 }
 
+template<u32 func(u32, int, int, u32)> void WrapU_UIIU() {
+	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
 template<int func(u32, int, int, u32, u32)> void WrapI_UIIUU() {
 	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4));
+	RETURN(retval);
+}
+
+template<int func(u32, u32, int, int)> void WrapI_UUII() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
+template<int func(u32, u32, int, int, int)> void WrapI_UUIII() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4));
 	RETURN(retval);
 }
 
@@ -308,6 +398,11 @@ template<int func(u32, u32, int)> void WrapI_UUI() {
 	RETURN(retval);
 }
 
+template<int func(u32, u32, int, u32)> void WrapI_UUIU() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
 template<int func(int, int)> void WrapI_II() {
 	int retval = func(PARAM(0), PARAM(1));
 	RETURN(retval);
@@ -318,8 +413,28 @@ template<int func(int, int, int)> void WrapI_III() {
 	RETURN(retval);
 }
 
+template<int func(int, u32, int)> void WrapI_IUI() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2));
+	RETURN(retval);
+}
+
 template<int func(int, int, int, int)> void WrapI_IIII() {
 	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
+template<int func(u32, int, int, int)> void WrapI_UIII() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
+template<int func(int, int, int, u32, int)> void WrapI_IIIUI() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4));
+	RETURN(retval);
+}
+
+template<int func(int, u32, u32, int, int)> void WrapI_IUUII() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4));
 	RETURN(retval);
 }
 
@@ -363,6 +478,21 @@ template<int func(const char *, u32)> void WrapI_CU() {
 	RETURN(retval);
 }
 
+template<int func(const char *, u32, int)> void WrapI_CUI() {
+	int retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2));
+	RETURN(retval);
+}
+
+template<int func(int, const char *, int, u32)> void WrapI_ICIU() {
+	int retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
+template<int func(const char *, int, u32)> void WrapI_CIU() {
+	int retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2));
+	RETURN(retval);
+}
+
 template<int func(const char *, u32, u32)> void WrapI_CUU() {
 	int retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2));
 	RETURN(retval);
@@ -374,9 +504,26 @@ template<int func(const char *, u32, u32, u32)> void WrapI_CUUU() {
 	RETURN(retval);
 }
 
+template<int func(const char *, const char*, int, int)> void WrapI_CCII() {
+	int retval = func(Memory::GetCharPointer(PARAM(0)), Memory::GetCharPointer(PARAM(1)), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
 template<int func(const char *, u32, u32, int, u32, u32)> void WrapI_CUUIUU() {
 	int retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2),
 			PARAM(3), PARAM(4), PARAM(5));
+	RETURN(retval);
+}
+
+template<int func(const char *, int, int, u32, int, int)> void WrapI_CIIUII() {
+	int retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2),
+		PARAM(3), PARAM(4), PARAM(5));
+	RETURN(retval);
+}
+
+template<int func(const char *, int, int, int, u32, u32, int)> void WrapI_CIIIUUI() {
+	int retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2),
+		PARAM(3), PARAM(4), PARAM(5), PARAM(6));
 	RETURN(retval);
 }
 
@@ -542,6 +689,11 @@ template<int func(int, u32, u32, u32, u32)> void WrapI_IUUUU() {
 	RETURN(retval);
 }
 
+template<int func(int, u32, u32, u32, u32, u32)> void WrapI_IUUUUU() {
+	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3), PARAM(4), PARAM(5));
+	RETURN(retval);
+}
+
 template<int func(int, u32, int, int)> void WrapI_IUII() {
 	int retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
 	RETURN(retval);
@@ -610,5 +762,45 @@ template<u32 func(u32, u32, u32, u32, u32, u32, u32)> void WrapU_UUUUUUU() {
 
 template<int func(u32, int, u32, u32)> void WrapI_UIUU() {
 	u32 retval = func(PARAM(0), PARAM(1), PARAM(2), PARAM(3));
+	RETURN(retval);
+}
+
+template<int func(int, const char *)> void WrapI_IC() {
+	int retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)));
+	RETURN(retval);
+}
+
+template <int func(int, const char *, const char *, u32, int)> void WrapI_ICCUI() {
+	int retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)), Memory::GetCharPointer(PARAM(2)), PARAM(3), PARAM(4));
+	RETURN(retval);
+}
+
+template <int func(int, const char *, const char *, int)> void WrapI_ICCI() {
+	int retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)), Memory::GetCharPointer(PARAM(2)), PARAM(3));
+	RETURN(retval);
+}
+
+template <int func(const char *, int, int)> void WrapI_CII() {
+	int retval = func(Memory::GetCharPointer(PARAM(0)), PARAM(1), PARAM(2));
+	RETURN(retval);
+}
+
+template <int func(int, const char *, int)> void WrapI_ICI() {
+	int retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)), PARAM(2));
+	RETURN(retval);
+}
+
+template<int func(int, void *, void *, void *, void *, u32, int)> void WrapI_IVVVVUI(){
+  u32 retval = func(PARAM(0), Memory::GetPointer(PARAM(1)), Memory::GetPointer(PARAM(2)), Memory::GetPointer(PARAM(3)), Memory::GetPointer(PARAM(4)), PARAM(5), PARAM(6) );
+  RETURN(retval);
+}
+
+template<int func(int, const char *, u32, void *, int, int, int)> void WrapI_ICUVIII(){
+  u32 retval = func(PARAM(0), Memory::GetCharPointer(PARAM(1)), PARAM(2), Memory::GetPointer(PARAM(3)), PARAM(4), PARAM(5), PARAM(6));
+  RETURN(retval);
+}
+
+template<int func(void *, u32, int)> void WrapI_VUI(){
+	u32 retval = func(Memory::GetPointer(PARAM(0)), PARAM(1), PARAM(2));
 	RETURN(retval);
 }

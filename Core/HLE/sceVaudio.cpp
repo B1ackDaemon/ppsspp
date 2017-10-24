@@ -15,54 +15,91 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "HLE.h"
-#include "FunctionWrappers.h"
-#include "sceVaudio.h"
-#include "sceAudio.h"
-#include "__sceAudio.h"
+#include "Common/ChunkFile.h"
+#include "Core/Reporting.h"
+#include "Core/HLE/HLE.h"
+#include "Core/HLE/FunctionWrappers.h"
+#include "Core/HLE/sceVaudio.h"
+#include "Core/HLE/sceAudio.h"
+#include "Core/HLE/__sceAudio.h"
 
 // Ultra hacky Vaudio implementation. Not sure what the point of this API is.
 
-u32 sceVaudioChReserve(int sampleCount, int freq, int format) {
-	WARN_LOG(HLE, "HACK sceVaudioChReserve(%i, %i, %i)", sampleCount, freq, format);
-	chans[0].reserved = true;
-	chans[0].sampleCount = sampleCount;
-	chans[0].format = format;
+bool vaudioReserved = false;
+
+void __VaudioInit() {
+	vaudioReserved = false;
+}
+
+void __VaudioDoState(PointerWrap &p) {
+	auto s = p.Section("sceVaudio", 1);
+	if (!s)
+		return;
+
+	p.Do(vaudioReserved);
+}
+
+static u32 sceVaudioChReserve(int sampleCount, int freq, int format) {
+	if (vaudioReserved) {
+		ERROR_LOG(SCEAUDIO, "sceVaudioChReserve(%i, %i, %i) - already reserved", sampleCount, freq, format);
+		return SCE_KERNEL_ERROR_BUSY;
+	}
+	// We still have to check the channel also, which gives a different error.
+	if (chans[PSP_AUDIO_CHANNEL_VAUDIO].reserved) {
+		ERROR_LOG(SCEAUDIO, "sceVaudioChReserve(%i, %i, %i) - channel already reserved", sampleCount, freq, format);
+		return SCE_ERROR_AUDIO_CHANNEL_ALREADY_RESERVED;
+	}
+	DEBUG_LOG(SCEAUDIO, "sceVaudioChReserve(%i, %i, %i)", sampleCount, freq, format);
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].reserved = true;
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].sampleCount = sampleCount;
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].format = format == 2 ? PSP_AUDIO_FORMAT_STEREO : PSP_AUDIO_FORMAT_MONO;
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].leftVolume = 0;
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].rightVolume = 0;
+	vaudioReserved = true;
 	__AudioSetOutputFrequency(freq);
 	return 0;
 }
 
-u32 sceVaudioChRelease() {
-	WARN_LOG(HLE, "HACK sceVaudioChRelease(...)");
-	if (!chans[0].reserved) {
+static u32 sceVaudioChRelease() {
+	DEBUG_LOG(SCEAUDIO, "sceVaudioChRelease(...)");
+	if (!chans[PSP_AUDIO_CHANNEL_VAUDIO].reserved) {
 		return SCE_ERROR_AUDIO_CHANNEL_NOT_RESERVED;
 	} else {
-		chans[0].reserved = false;
+		chans[PSP_AUDIO_CHANNEL_VAUDIO].reset();
+		chans[PSP_AUDIO_CHANNEL_VAUDIO].reserved = false;
+		vaudioReserved = false;
 		return 0;
 	}
 }
 
-u32 sceVaudioOutputBlocking(int vol, u32 buffer) {
-	WARN_LOG(HLE, "HACK sceVaudioOutputBlocking(%i, %08x)", vol, buffer);
-	return __AudioEnqueue(chans[0], 0, true);
+static u32 sceVaudioOutputBlocking(int vol, u32 buffer) {
+	DEBUG_LOG(SCEAUDIO, "sceVaudioOutputBlocking(%i, %08x)", vol, buffer);
+	chans[PSP_AUDIO_CHANNEL_OUTPUT2].leftVolume = vol;
+	chans[PSP_AUDIO_CHANNEL_OUTPUT2].rightVolume = vol;
+	// TODO: This may be wrong, not sure if's in a different format?
+	chans[PSP_AUDIO_CHANNEL_OUTPUT2].sampleAddress = buffer;
+	return __AudioEnqueue(chans[PSP_AUDIO_CHANNEL_VAUDIO], PSP_AUDIO_CHANNEL_VAUDIO, true);
 }
 
-u32 sceVaudioSetEffectType(int effectType, int vol) {
-	ERROR_LOG(HLE, "UNIMPL sceVaudioSetEffectType(%i, %i)", effectType, vol);
+static u32 sceVaudioSetEffectType(int effectType, int vol) {
+	ERROR_LOG_REPORT(SCEAUDIO, "UNIMPL sceVaudioSetEffectType(%i, %i)", effectType, vol);
 	return 0;
 }
 
-u32 sceVaudioSetAlcMode(int alcMode) {
-	ERROR_LOG(HLE, "UNIMPL sceVaudioSetAlcMode(%i)", alcMode);
+static u32 sceVaudioSetAlcMode(int alcMode) {
+	ERROR_LOG_REPORT(SCEAUDIO, "UNIMPL sceVaudioSetAlcMode(%i)", alcMode);
 	return 0;
 }
 
 const HLEFunction sceVaudio[] = {
-	{0x03b6807d, WrapU_IU<sceVaudioOutputBlocking>, "sceVaudioOutputBlockingFunction"},
-	{0x67585dfd, WrapU_III<sceVaudioChReserve>, "sceVaudioChReserveFunction"},
-	{0x8986295e, WrapU_V<sceVaudioChRelease>, "sceVaudioChReleaseFunction"},
-	{0x346FBE94, WrapU_II<sceVaudioSetEffectType>, "sceVaudioSetEffectType"},
-	{0xCBD4AC51, WrapU_I<sceVaudioSetAlcMode>, "sceVaudioSetAlcMode"},
+	{0X8986295E, &WrapU_IU<sceVaudioOutputBlocking>, "sceVaudioOutputBlocking",     'x', "ix" },
+	{0X03B6807D, &WrapU_III<sceVaudioChReserve>,     "sceVaudioChReserve",          'x', "iii"},
+	{0X67585DFD, &WrapU_V<sceVaudioChRelease>,       "sceVaudioChRelease",          'x', ""   },
+	{0X346FBE94, &WrapU_II<sceVaudioSetEffectType>,  "sceVaudioSetEffectType",      'x', "ii" },
+	{0XCBD4AC51, &WrapU_I<sceVaudioSetAlcMode>,      "sceVaudioSetAlcMode",         'x', "i"  },
+	{0X504E4745, nullptr,                            "sceVaudio_504E4745",          '?', ""   },
+	{0X27ACC20B, nullptr,                            "sceVaudioChReserveBuffering", '?', ""   },
+	{0XE8E78DC8, nullptr,                            "sceVaudio_E8E78DC8",          '?', ""   },
 };
 
 void Register_sceVaudio() {

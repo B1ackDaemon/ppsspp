@@ -22,54 +22,36 @@
 #include "math/math_util.h"
 
 #include "Common/Common.h"
-#include "../Core.h"
-#include "MIPS.h"
-#include "MIPSInt.h"
-#include "MIPSTables.h"
-#include "Core/Reporting.h"
 #include "Core/Config.h"
-
-#include "../HLE/HLE.h"
-#include "../System.h"
+#include "Core/Core.h"
+#include "Core/Host.h"
+#include "Core/MemMap.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MIPSInt.h"
+#include "Core/MIPS/MIPSTables.h"
+#include "Core/Reporting.h"
+#include "Core/HLE/HLE.h"
+#include "Core/HLE/HLETables.h"
+#include "Core/HLE/ReplaceTables.h"
+#include "Core/System.h"
 
 #define R(i) (currentMIPS->r[i])
-#define RF(i) (*(float*)(&(currentMIPS->r[i])))
 #define F(i) (currentMIPS->f[i])
-#define FI(i) (*(u32*)(&(currentMIPS->f[i])))
-#define FsI(i) (*(s32*)(&(currentMIPS->f[i])))
+#define FI(i) (currentMIPS->fi[i])
+#define FsI(i) (currentMIPS->fs[i])
 #define PC (currentMIPS->pc)
 
-#define _RS ((op>>21) & 0x1F)
-#define _RT ((op>>16) & 0x1F)
-#define _RD ((op>>11) & 0x1F)
-#define _FS ((op>>11) & 0x1F)
-#define _FT ((op>>16) & 0x1F)
-#define _FD ((op>>6 ) & 0x1F)
-#define _POS ((op>>6 ) & 0x1F)
-#define _SIZE ((op>>11 ) & 0x1F)
+#define _RS   ((op>>21) & 0x1F)
+#define _RT   ((op>>16) & 0x1F)
+#define _RD   ((op>>11) & 0x1F)
+#define _FS   ((op>>11) & 0x1F)
+#define _FT   ((op>>16) & 0x1F)
+#define _FD   ((op>>6 ) & 0x1F)
+#define _POS  ((op>>6 ) & 0x1F)
+#define _SIZE ((op>>11) & 0x1F)
 
 #define HI currentMIPS->hi
 #define LO currentMIPS->lo
-
-
-inline int is_even(float d) {
-	float int_part;
-	modff(d / 2.0f, &int_part);
-	return 2.0f * int_part == d;
-}
-
-// Rounds *.5 to closest even number
-float round_ieee_754(float d) {
-	float i = floorf(d);
-	d -= i;
-	if(d < 0.5f)
-		return i;
-	if(d > 0.5f)
-		return i + 1.0f;
-	if(is_even(i))
-		return i;
-	return i + 1.0f;
-}
 
 static inline void DelayBranchTo(u32 where)
 {
@@ -87,66 +69,45 @@ static inline void SkipLikely()
 int MIPS_SingleStep()
 {
 #if defined(ARM)
-	u32 op = Memory::ReadUnchecked_U32(mipsr4k.pc);
+	MIPSOpcode op = MIPSOpcode(Memory::ReadUnchecked_U32(mipsr4k.pc));
 #else
-	u32 op = Memory::Read_Opcode_JIT(mipsr4k.pc);
+	MIPSOpcode op = Memory::Read_Opcode_JIT(mipsr4k.pc);
 #endif
-	/*
-	// Choke on VFPU
-	u32 info = MIPSGetInfo(op);
-	if (info & IS_VFPU)
-	{
-		if (!Core_IsStepping() && !GetAsyncKeyState(VK_LSHIFT))
-		{
-			Core_EnableStepping(true);
-			return;
-		}
-	}*/
-
-	if (mipsr4k.inDelaySlot)
-	{
+	if (mipsr4k.inDelaySlot) {
 		MIPSInterpret(op);
-		if (mipsr4k.inDelaySlot)
-		{
+		if (mipsr4k.inDelaySlot) {
 			mipsr4k.pc = mipsr4k.nextPC;
 			mipsr4k.inDelaySlot = false;
 		}
-	}
-	else
-	{
+	} else {
 		MIPSInterpret(op);
 	}
 	return 1;
 }
 
-
-
-u32 MIPS_GetNextPC()
-{
-	if (mipsr4k.inDelaySlot)
-		return mipsr4k.nextPC;
-	else
-		return mipsr4k.pc + 4;
-}
-
-
-void MIPS_ClearDelaySlot()
-{
-	mipsr4k.inDelaySlot = false;
-}
-
-
 namespace MIPSInt
 {
-	void Int_Cache(u32 op)
+	void Int_Cache(MIPSOpcode op)
 	{
 		int imm = (s16)(op & 0xFFFF);
 		int rs = _RS;
 		int addr = R(rs) + imm;
 		int func = (op >> 16) & 0x1F;
 
-		// It appears that a cache line is 0x40 (64) bytes.
+		// It appears that a cache line is 0x40 (64) bytes, loops in games
+		// issue the cache instruction at that interval.
+
+		// These codes might be PSP-specific, they don't match regular MIPS cache codes very well
 		switch (func) {
+		// Icache
+		case 8:
+			// Invalidate the instruction cache at this address
+			if (MIPSComp::jit) {
+				MIPSComp::jit->InvalidateCacheAt(addr, 0x40);
+			}
+			break;
+
+		// Dcache
 		case 24:
 			// "Create Dirty Exclusive" - for avoiding a cacheline fill before writing to it.
 			// Will cause garbage on the real machine so we just ignore it, the app will overwrite the cacheline.
@@ -154,19 +115,19 @@ namespace MIPSInt
 		case 25:  // Hit Invalidate - zaps the line if present in cache. Should not writeback???? scary.
 			// No need to do anything.
 			break;
-		case 27:  // D-cube. Hit Writeback Invalidate.
+		case 27:  // D-cube. Hit Writeback Invalidate.  Tony Hawk Underground 2
 			break;
-		case 30:  // GTA LCS, a lot. Fill (prefetch).
+		case 30:  // GTA LCS, a lot. Fill (prefetch).   Tony Hawk Underground 2
 			break;
 
 		default:
-			DEBUG_LOG(CPU,"cache instruction affecting %08x : function %i", addr, func);
+			DEBUG_LOG(CPU, "cache instruction affecting %08x : function %i", addr, func);
 		}
 
 		PC += 4;
 	}
 
-	void Int_Syscall(u32 op)
+	void Int_Syscall(MIPSOpcode op)
 	{
 		// Need to pre-move PC, as CallSyscall may result in a rescheduling!
 		// To do this neater, we'll need a little generated kernel loop that syscall can jump to and then RFI from 
@@ -183,22 +144,24 @@ namespace MIPSInt
 		CallSyscall(op);
 	}
 
-	void Int_Sync(u32 op)
+	void Int_Sync(MIPSOpcode op)
 	{
 		//DEBUG_LOG(CPU, "sync");
 		PC += 4;
 	}
 
-	void Int_Break(u32 op)
+	void Int_Break(MIPSOpcode op)
 	{
 		Reporting::ReportMessage("BREAK instruction hit");
 		ERROR_LOG(CPU, "BREAK!");
-		if (!g_Config.bIgnoreBadMemAccess) 
-			Core_UpdateState(CORE_STEPPING);
+		if (!g_Config.bIgnoreBadMemAccess) {
+			Core_EnableStepping(true);
+			host->SetDebugMode(true);
+		}
 		PC += 4;
 	}
 
-	void Int_RelBranch(u32 op)
+	void Int_RelBranch(MIPSOpcode op)
 	{
 		int imm = (signed short)(op&0xFFFF)<<2;
 		int rs = _RS;
@@ -223,7 +186,7 @@ namespace MIPSInt
 		}
 	}
 
-	void Int_RelBranchRI(u32 op)
+	void Int_RelBranchRI(MIPSOpcode op)
 	{
 		int imm = (signed short)(op&0xFFFF)<<2;
 		int rs = _RS;
@@ -246,11 +209,12 @@ namespace MIPSInt
 	}
 
 
-	void Int_VBranch(u32 op)
+	void Int_VBranch(MIPSOpcode op)
 	{
 		int imm = (signed short)(op&0xFFFF)<<2;
 		u32 addr = PC + imm + 4;
 
+		// x, y, z, w, any, all, (invalid), (invalid)
 		int imm3 = (op>>18)&7;
 		int val = (currentMIPS->vfpuCtrl[VFPU_CTRL_CC] >> imm3) & 1;
 
@@ -263,7 +227,7 @@ namespace MIPSInt
 		}
 	}
 
-	void Int_FPUBranch(u32 op)
+	void Int_FPUBranch(MIPSOpcode op)
 	{
 		int imm = (signed short)(op&0xFFFF)<<2;
 		u32 addr = PC + imm + 4;
@@ -279,12 +243,12 @@ namespace MIPSInt
 		}
 	}
 	
-	void Int_JumpType(u32 op)
+	void Int_JumpType(MIPSOpcode op)
 	{
 		if (mipsr4k.inDelaySlot)
 			_dbg_assert_msg_(CPU,0,"Jump in delay slot :(");
 
-		u32 off = ((op & 0x3FFFFFF) << 2);
+		u32 off = ((op & 0x03FFFFFF) << 2);
 		u32 addr = (currentMIPS->pc & 0xF0000000) | off;
 
 		switch (op>>26) 
@@ -300,18 +264,19 @@ namespace MIPSInt
 		}
 	}
 
-	void Int_JumpRegType(u32 op)
+	void Int_JumpRegType(MIPSOpcode op)
 	{
 		if (mipsr4k.inDelaySlot)
 		{
 			// There's one of these in Star Soldier at 0881808c, which seems benign - it should probably be ignored.
 			if (op == 0x03e00008)
 				return;
-			ERROR_LOG(HLE, "Jump in delay slot :(");
+			ERROR_LOG(CPU, "Jump in delay slot :(");
 			_dbg_assert_msg_(CPU,0,"Jump in delay slot :(");
 		}
 
-		int rs = (op>>21)&0x1f;
+		int rs = _RS;
+		int rd = _RD;
 		u32 addr = R(rs);
 		switch (op & 0x3f) 
 		{
@@ -320,13 +285,14 @@ namespace MIPSInt
 			DelayBranchTo(addr);
 			break;
 		case 9: //jalr
-			R(31) = PC + 8;
+			if (rd != 0)
+				R(rd) = PC + 8;
 			DelayBranchTo(addr);
 			break;
 		}
 	}
 
-	void Int_IType(u32 op)
+	void Int_IType(MIPSOpcode op)
 	{
 		s32 simm = (s32)(s16)(op & 0xFFFF);
 		u32 uimm = (u32)(u16)(op & 0xFFFF);
@@ -358,12 +324,12 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_StoreSync(u32 op)
+	void Int_StoreSync(MIPSOpcode op)
 	{
-		s32 imm = (signed short)(op&0xFFFF);
-		int base = ((op >> 21) & 0x1f);
-		int rt = (op >> 16) & 0x1f;
-		u32 addr = R(base) + imm;
+		int imm = (signed short)(op&0xFFFF);
+		int rt = _RT;
+		int rs = _RS;
+		u32 addr = R(rs) + imm;
 
 		switch (op >> 26)
 		{
@@ -391,7 +357,7 @@ namespace MIPSInt
 	}
 
 
-	void Int_RType3(u32 op)
+	void Int_RType3(MIPSOpcode op)
 	{
 		int rt = _RT;
 		int rs = _RS;
@@ -411,14 +377,14 @@ namespace MIPSInt
 		case 11: if (R(rt) != 0) R(rd) = R(rs); break; //movn
 		case 32: 
 			if (!has_warned) {
-				ERROR_LOG(HLE,"WARNING : exception-causing add at %08x", PC);
+				ERROR_LOG(CPU,"WARNING : exception-causing add at %08x", PC);
 				has_warned = true;
 			}
 			R(rd) = R(rs) + R(rt);		break; //add
 		case 33: R(rd) = R(rs) + R(rt);		break; //addu
 		case 34: 
 			if (!has_warned) {
-				ERROR_LOG(HLE,"WARNING : exception-causing sub at %08x", PC);
+				ERROR_LOG(CPU,"WARNING : exception-causing sub at %08x", PC);
 				has_warned = true;
 			}
 			R(rd) = R(rs) - R(rt);		break; //sub
@@ -439,7 +405,7 @@ namespace MIPSInt
 	}
 
 
-	void Int_ITypeMem(u32 op)
+	void Int_ITypeMem(MIPSOpcode op)
 	{
 		int imm = (signed short)(op&0xFFFF);
 		int rt = _RT;
@@ -509,7 +475,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_FPULS(u32 op)
+	void Int_FPULS(MIPSOpcode op)
 	{
 		s32 offset = (s16)(op&0xFFFF);
 		int ft = _FT;
@@ -527,17 +493,47 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_mxc1(u32 op)
+	void Int_mxc1(MIPSOpcode op)
 	{
 		int fs = _FS;
 		int rt = _RT;
 
-		switch((op>>21)&0x1f) 
-		{
-		case 0: if (rt != 0) R(rt) = FI(fs); break; //mfc1
-		case 2: if (rt != 0) R(rt) = currentMIPS->ReadFCR(fs); break; //cfc1
-		case 4: FI(fs) = R(rt);	break; //mtc1
-		case 6: currentMIPS->WriteFCR(fs, R(rt)); break; //ctc1
+		switch ((op>>21)&0x1f) {
+		case 0: //mfc1
+			if (rt != 0)
+				R(rt) = FI(fs);
+			break;
+
+		case 2: //cfc1
+			if (rt != 0) {
+				if (fs == 31) {
+					currentMIPS->fcr31 = (currentMIPS->fcr31 & ~(1<<23)) | ((currentMIPS->fpcond & 1)<<23);
+					R(rt) = currentMIPS->fcr31;
+				} else if (fs == 0) {
+					R(rt) = MIPSState::FCR0_VALUE;
+				} else {
+					WARN_LOG_REPORT(CPU, "ReadFCR: Unexpected reg %d", fs);
+					R(rt) = 0;
+				}
+				break;
+			}
+
+		case 4: //mtc1
+			FI(fs) = R(rt);
+			break;
+
+		case 6: //ctc1
+			{
+				u32 value = R(rt);
+				if (fs == 31) {
+					currentMIPS->fcr31 = value & 0x0181FFFF;
+					currentMIPS->fpcond = (value >> 23) & 1;
+				} else {
+					WARN_LOG_REPORT(CPU, "WriteFCR: Unexpected reg %d (value %08x)", fs, value);
+				}
+				DEBUG_LOG(CPU, "FCR%i written to, value %08x", fs, value);
+				break;
+			}
 		
 		default:
 			_dbg_assert_msg_(CPU,0,"Trying to interpret instruction that can't be interpreted");
@@ -546,7 +542,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_RType2(u32 op)
+	void Int_RType2(MIPSOpcode op)
 	{
 		int rs = _RS;
 		int rd = _RD;
@@ -564,7 +560,7 @@ namespace MIPSInt
 			{ //TODO: verify
 				int x = 31;
 				int count=0;
-				while (!(R(rs) & (1<<x)) && x >= 0)
+				while (x >= 0 && !(R(rs) & (1<<x)))
 				{
 					count++;
 					x--;
@@ -576,7 +572,7 @@ namespace MIPSInt
 			{ //TODO: verify
 				int x = 31;
 				int count=0;
-				while ((R(rs) & (1<<x)) && x >= 0)
+				while (x >= 0 && (R(rs) & (1<<x)))
 				{
 					count++;
 					x--;
@@ -591,7 +587,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_MulDivType(u32 op)
+	void Int_MulDivType(MIPSOpcode op)
 	{
 		int rt = _RT;
 		int rs = _RS;
@@ -654,9 +650,9 @@ namespace MIPSInt
 				HI = (u32)(result>>32);
 			}
 			break;
-		case 16: R(rd) = HI; break; //mfhi
+		case 16: if (rd != 0) R(rd) = HI; break; //mfhi
 		case 17: HI = R(rs); break; //mthi
-		case 18: R(rd) = LO; break; //mflo
+		case 18: if (rd != 0) R(rd) = LO; break; //mflo
 		case 19: LO = R(rs); break; //mtlo
 		case 26: //div
 			{
@@ -664,11 +660,13 @@ namespace MIPSInt
 				s32 b = (s32)R(rt);
 				if (a == (s32)0x80000000 && b == -1) {
 					LO = 0x80000000;
+					HI = -1;
 				} else if (b != 0) {
 					LO = (u32)(a / b);
 					HI = (u32)(a % b);
 				} else {
-					LO = HI = 0;	// Not sure what the right thing to do is?
+					LO = a < 0 ? 1 : -1;
+					HI = a;
 				}
 			}
 			break;
@@ -676,12 +674,12 @@ namespace MIPSInt
 			{
 				u32 a = R(rs);
 				u32 b = R(rt);
-				if (b != 0) 
-				{
+				if (b != 0) {
 					LO = (a/b);
 					HI = (a%b);
 				} else {
-					LO = HI = 0;
+					LO = a <= 0xFFFF ? 0xFFFF : -1;
+					HI = a;
 				}
 			}
 			break;
@@ -694,7 +692,7 @@ namespace MIPSInt
 	}
 
 
-	void Int_ShiftType(u32 op)
+	void Int_ShiftType(MIPSOpcode op)
 	{
 		int rt = _RT;
 		int rs = _RS;
@@ -748,7 +746,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_Allegrex(u32 op)
+	void Int_Allegrex(MIPSOpcode op)
 	{
 		int rt = _RT;
 		int rd = _RD;
@@ -791,7 +789,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_Allegrex2(u32 op)
+	void Int_Allegrex2(MIPSOpcode op)
 	{
 		int rt = _RT;
 		int rd = _RD;
@@ -809,7 +807,7 @@ namespace MIPSInt
 			R(rd) = ((R(rt) & 0xFF00FF00) >> 8) | ((R(rt) & 0x00FF00FF) << 8);
 			break;
 		case 0xE0: //wsbw
-			R(rd) = _byteswap_ulong(R(rt));
+			R(rd) = swap32(R(rt));
 			break;
 		default:
 			_dbg_assert_msg_(CPU,0,"Trying to interpret ALLEGREX instruction that can't be interpreted");
@@ -818,32 +816,54 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_Special3(u32 op)
+	void Int_Special2(MIPSOpcode op)
+	{
+		static int reported = 0;
+		switch (op & 0x3F)
+		{
+		case 36:  // mfic
+			if (!reported) {
+				Reporting::ReportMessage("MFIC instruction hit (%08x) at %08x", op.encoding, currentMIPS->pc);
+				WARN_LOG(CPU,"MFIC Disable/Enable Interrupt CPU instruction");
+				reported = 1;
+			}
+			break;
+		case 38:  // mtic
+			if (!reported) {
+				Reporting::ReportMessage("MTIC instruction hit (%08x) at %08x", op.encoding, currentMIPS->pc);
+				WARN_LOG(CPU,"MTIC Disable/Enable Interrupt CPU instruction");
+				reported = 1;
+			}
+			break;
+		}
+		PC += 4;
+	}
+
+	void Int_Special3(MIPSOpcode op)
 	{
 		int rs = _RS;
 		int rt = _RT;
 		int pos = _POS;
 
 		// Don't change $zr.
-		if (rt == 0)
-		{
+		if (rt == 0) {
 			PC += 4;
 			return;
 		}
 
-		switch (op & 0x3f)
-		{
+		switch (op & 0x3f) {
 		case 0x0: //ext
 			{
 				int size = _SIZE + 1;
-				R(rt) = (R(rs) >> pos) & ((1<<size) - 1);
+				u32 sourcemask = 0xFFFFFFFFUL >> (32 - size);
+				R(rt) = (R(rs) >> pos) & sourcemask;
 			}
 			break;
 		case 0x4: //ins
 			{
 				int size = (_SIZE + 1) - pos;
-				int sourcemask = (1 << size) - 1;
-				int destmask = sourcemask << pos;
+				u32 sourcemask = 0xFFFFFFFFUL >> (32 - size);
+				u32 destmask = sourcemask << pos;
 				R(rt) = (R(rt) & ~destmask) | ((R(rs)&sourcemask) << pos);
 			}
 			break;
@@ -852,7 +872,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_FPU2op(u32 op)
+	void Int_FPU2op(MIPSOpcode op)
 	{
 		int fs = _FS;
 		int fd = _FD;
@@ -863,13 +883,42 @@ namespace MIPSInt
 		case 5:	F(fd)	= fabsf(F(fs)); break; //abs
 		case 6:	F(fd)	= F(fs); break; //mov
 		case 7:	F(fd)	= -F(fs); break; //neg
-		case 12: FsI(fd) = (int)floorf(F(fs)+0.5f); break; //round.w.s
-		case 13: FsI(fd) = F(fs)>=0 ? (int)floorf(F(fs)) : (int)ceilf(F(fs)); break;//trunc.w.s
-		case 14: FsI(fd) = (int)ceilf (F(fs)); break; //ceil.w.s
-		case 15: FsI(fd) = (int)floorf(F(fs)); break; //floor.w.s
+		case 12:
+		case 13:
+		case 14:
+		case 15:
+			if (my_isnanorinf(F(fs)))
+			{
+				FsI(fd) = my_isinf(F(fs)) && F(fs) < 0.0f ? -2147483648LL : 2147483647LL;
+				break;
+			}
+			switch (op & 0x3f)
+			{
+			case 12: FsI(fd) = (int)floorf(F(fs)+0.5f); break; //round.w.s
+			case 13: //trunc.w.s
+				if (F(fs) >= 0.0f) {
+					FsI(fd) = (int)floorf(F(fs));
+					// Overflow, but it was positive.
+					if (FsI(fd) == -2147483648LL) {
+						FsI(fd) = 2147483647LL;
+					}
+				} else {
+					// Overflow happens to be the right value anyway.
+					FsI(fd) = (int)ceilf(F(fs));
+				}
+				break;
+			case 14: FsI(fd) = (int)ceilf (F(fs)); break; //ceil.w.s
+			case 15: FsI(fd) = (int)floorf(F(fs)); break; //floor.w.s
+			}
+			break;
 		case 32: F(fd) = (float)FsI(fs); break; //cvt.s.w
 
 		case 36:
+			if (my_isnanorinf(F(fs)))
+			{
+				FsI(fd) = my_isinf(F(fs)) && F(fs) < 0.0f ? -2147483648LL : 2147483647LL;
+				break;
+			}
 			switch (currentMIPS->fcr31 & 3)
 			{
 			case 0: FsI(fd) = (int)round_ieee_754(F(fs)); break;  // RINT_0
@@ -885,7 +934,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_FPUComp(u32 op)
+	void Int_FPUComp(MIPSOpcode op)
 	{
 		int fs = _FS;
 		int ft = _FT;
@@ -904,7 +953,7 @@ namespace MIPSInt
 
 		case 2: //eq
 		case 10: //seq
-			cond = (F(fs) == F(ft));
+			cond = !my_isnan(F(fs)) && !my_isnan(F(ft)) && (F(fs) == F(ft));
 			break;
 
 		case 3: //ueq
@@ -941,7 +990,7 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_FPU3op(u32 op)
+	void Int_FPU3op(MIPSOpcode op)
 	{
 		int ft = _FT;
 		int fs = _FS;
@@ -949,10 +998,10 @@ namespace MIPSInt
 
 		switch (op & 0x3f)
 		{
-		case 0: F(fd) = F(fs) + F(ft); break; //add
-		case 1: F(fd) = F(fs) - F(ft); break; //sub
-		case 2: F(fd) = F(fs) * F(ft); break; //mul
-		case 3: F(fd) = F(fs) / F(ft); break; //div
+		case 0: F(fd) = F(fs) + F(ft); break; // add.s
+		case 1: F(fd) = F(fs) - F(ft); break; // sub.s
+		case 2: F(fd) = F(fs) * F(ft); break; // mul.s
+		case 3: F(fd) = F(fs) / F(ft); break; // div.s
 		default:
 			_dbg_assert_msg_(CPU,0,"Trying to interpret FPU3Op instruction that can't be interpreted");
 			break;
@@ -960,14 +1009,14 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-	void Int_Interrupt(u32 op)
+	void Int_Interrupt(MIPSOpcode op)
 	{
 		static int reported = 0;
 		switch (op & 1)
 		{
 		case 0:
 			if (!reported) {
-				Reporting::ReportMessage("INTERRUPT instruction hit");
+				Reporting::ReportMessage("INTERRUPT instruction hit (%08x) at %08x", op.encoding, currentMIPS->pc);
 				WARN_LOG(CPU,"Disable/Enable Interrupt CPU instruction");
 				reported = 1;
 			}
@@ -976,10 +1025,30 @@ namespace MIPSInt
 		PC += 4;
 	}
 
-
-	void Int_Emuhack(u32 op)
+	void Int_Emuhack(MIPSOpcode op)
 	{
-		_dbg_assert_msg_(CPU,0,"Trying to interpret emuhack instruction that can't be interpreted");
+		if (((op >> 24) & 3) != EMUOP_CALL_REPLACEMENT) {
+			_dbg_assert_msg_(CPU,0,"Trying to interpret emuhack instruction that can't be interpreted");
+		}
+		// It's a replacement func!
+		int index = op.encoding & 0xFFFFFF;
+		const ReplacementTableEntry *entry = GetReplacementFunc(index);
+		if (entry && entry->replaceFunc && (entry->flags & REPFLAG_DISABLED) == 0) {
+			entry->replaceFunc();
+
+			if (entry->flags & (REPFLAG_HOOKENTER | REPFLAG_HOOKEXIT)) {
+				// Interpret the original instruction under the hook.
+				MIPSInterpret(Memory::Read_Instruction(PC, true));
+			} else {
+				PC = currentMIPS->r[MIPS_REG_RA];
+			}
+		} else {
+			if (!entry || !entry->replaceFunc) {
+				ERROR_LOG(CPU, "Bad replacement function index %i", index);
+			}
+			// Interpret the original instruction under it.
+			MIPSInterpret(Memory::Read_Instruction(PC, true));
+		}
 	}
 
 

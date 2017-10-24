@@ -17,260 +17,289 @@
 
 #pragma once
 
-#include "../../../Globals.h"
-
+#include "Common/CPUDetect.h"
+#include "Common/ArmCommon.h"
+#include "Common/ArmEmitter.h"
+#include "Core/MIPS/JitCommon/JitState.h"
 #include "Core/MIPS/JitCommon/JitBlockCache.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/MIPS/ARM/ArmRegCache.h"
 #include "Core/MIPS/ARM/ArmRegCacheFPU.h"
-#include "Core/MIPS/ARM/ArmAsm.h"
+#include "Core/MIPS/MIPSVFPUUtils.h"
 
-#if defined(MAEMO)
+#ifndef offsetof
 #include "stddef.h"
 #endif
 
-namespace MIPSComp
-{
+namespace MIPSComp {
 
-struct ArmJitOptions
-{
-	ArmJitOptions()
-	{
-		enableBlocklink = true;
-	}
-
-	bool enableBlocklink;
-};
-
-struct ArmJitState
-{
-	enum PrefixState
-	{
-		PREFIX_UNKNOWN = 0x00,
-		PREFIX_KNOWN = 0x01,
-		PREFIX_DIRTY = 0x10,
-		PREFIX_KNOWN_DIRTY = 0x11,
-	};
-
-	u32 compilerPC;
-	u32 blockStart;
-	bool cancel;
-	bool inDelaySlot;
-	int downcountAmount;
-	bool compiling;	// TODO: get rid of this in favor of using analysis results to determine end of block
-	JitBlock *curBlock;
-
-	// VFPU prefix magic
-	bool startDefaultPrefix;
-	u32 prefixS;
-	u32 prefixT;
-	u32 prefixD;
-	PrefixState prefixSFlag;
-	PrefixState prefixTFlag;
-	PrefixState prefixDFlag;
-	void PrefixStart() {
-		if (startDefaultPrefix) {
-			EatPrefix();
-		} else {
-			PrefixUnknown();
-		}
-	}
-	void PrefixUnknown() {
-		prefixSFlag = PREFIX_UNKNOWN;
-		prefixTFlag = PREFIX_UNKNOWN;
-		prefixDFlag = PREFIX_UNKNOWN;
-	}
-	bool MayHavePrefix() const {
-		if (HasUnknownPrefix()) {
-			return true;
-		} else if (prefixS != 0xE4 || prefixT != 0xE4 || prefixD != 0) {
-			return true;
-		} else if (VfpuWriteMask() != 0) {
-			return true;
-		}
-
-		return false;
-	}
-	bool HasUnknownPrefix() const {
-		if (!(prefixSFlag & PREFIX_KNOWN) || !(prefixTFlag & PREFIX_KNOWN) || !(prefixDFlag & PREFIX_KNOWN)) {
-			return true;
-		}
-		return false;
-	}
-	void EatPrefix() {
-		if ((prefixSFlag & PREFIX_KNOWN) == 0 || prefixS != 0xE4) {
-			prefixSFlag = PREFIX_KNOWN_DIRTY;
-			prefixS = 0xE4;
-		}
-		if ((prefixTFlag & PREFIX_KNOWN) == 0 || prefixT != 0xE4) {
-			prefixTFlag = PREFIX_KNOWN_DIRTY;
-			prefixT = 0xE4;
-		}
-		if ((prefixDFlag & PREFIX_KNOWN) == 0 || prefixD != 0x0 || VfpuWriteMask() != 0) {
-			prefixDFlag = PREFIX_KNOWN_DIRTY;
-			prefixD = 0x0;
-		}
-	}
-	u8 VfpuWriteMask() const {
-		_assert_(prefixDFlag & PREFIX_KNOWN);
-		return (prefixD >> 8) & 0xF;
-	}
-	bool VfpuWriteMask(int i) const {
-		_assert_(prefixDFlag & PREFIX_KNOWN);
-		return (prefixD >> (8 + i)) & 1;
-	}
-};
-
-
-enum CompileDelaySlotFlags
-{
-	// Easy, nothing extra.
-	DELAYSLOT_NICE = 0,
-	// Flush registers after delay slot.
-	DELAYSLOT_FLUSH = 1,
-	// Preserve flags.
-	DELAYSLOT_SAFE = 2,
-	// Flush registers after and preserve flags.
-	DELAYSLOT_SAFE_FLUSH = DELAYSLOT_FLUSH | DELAYSLOT_SAFE,
-};
-
-class Jit : public ArmGen::ARMXCodeBlock
-{
+class ArmJit : public ArmGen::ARMXCodeBlock, public JitInterface, public MIPSFrontendInterface {
 public:
-	Jit(MIPSState *mips);
-	void DoState(PointerWrap &p);
-	static void DoDummyState(PointerWrap &p);
+	ArmJit(MIPSState *mips);
+	virtual ~ArmJit();
+
+	void DoState(PointerWrap &p) override;
+	void DoDummyState(PointerWrap &p) override;
+
+	const JitOptions &GetJitOptions() { return jo; }
 
 	// Compiled ops should ignore delay slots
 	// the compiler will take care of them by itself
 	// OR NOT
-	void Comp_Generic(u32 op);
+	void Comp_Generic(MIPSOpcode op) override;
 
-	void RunLoopUntil(u64 globalticks);
+	void RunLoopUntil(u64 globalticks) override;
 
-	void Compile(u32 em_address);	// Compiles a block at current MIPS PC
-	const u8 *DoJit(u32 em_address, JitBlock *b);
+	void Compile(u32 em_address) override;	// Compiles a block at current MIPS PC
 
-	void CompileDelaySlot(int flags);
-	void CompileAt(u32 addr);
-	void EatInstruction(u32 op);
-	void Comp_RunBlock(u32 op);
+	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;
+	MIPSOpcode GetOriginalOp(MIPSOpcode op) override;
+
+	void Comp_RunBlock(MIPSOpcode op) override;
+	void Comp_ReplacementFunc(MIPSOpcode op) override;
 
 	// Ops
-	void Comp_ITypeMem(u32 op);
+	void Comp_ITypeMem(MIPSOpcode op) override;
+	void Comp_Cache(MIPSOpcode op) override;
 
-	void Comp_RelBranch(u32 op);
-	void Comp_RelBranchRI(u32 op);
-	void Comp_FPUBranch(u32 op);
-	void Comp_FPULS(u32 op);
-	void Comp_FPUComp(u32 op);
-	void Comp_Jump(u32 op);
-	void Comp_JumpReg(u32 op);
-	void Comp_Syscall(u32 op);
-	void Comp_Break(u32 op);
+	void Comp_RelBranch(MIPSOpcode op) override;
+	void Comp_RelBranchRI(MIPSOpcode op) override;
+	void Comp_FPUBranch(MIPSOpcode op) override;
+	void Comp_FPULS(MIPSOpcode op) override;
+	void Comp_FPUComp(MIPSOpcode op) override;
+	void Comp_Jump(MIPSOpcode op) override;
+	void Comp_JumpReg(MIPSOpcode op) override;
+	void Comp_Syscall(MIPSOpcode op) override;
+	void Comp_Break(MIPSOpcode op) override;
 
-	void Comp_IType(u32 op);
-	void Comp_RType2(u32 op);
-	void Comp_RType3(u32 op);
-	void Comp_ShiftType(u32 op);
-	void Comp_Allegrex(u32 op);
-	void Comp_VBranch(u32 op);
-	void Comp_MulDivType(u32 op);
-	void Comp_Special3(u32 op);
+	void Comp_IType(MIPSOpcode op) override;
+	void Comp_RType2(MIPSOpcode op) override;
+	void Comp_RType3(MIPSOpcode op) override;
+	void Comp_ShiftType(MIPSOpcode op) override;
+	void Comp_Allegrex(MIPSOpcode op) override;
+	void Comp_Allegrex2(MIPSOpcode op) override;
+	void Comp_VBranch(MIPSOpcode op) override;
+	void Comp_MulDivType(MIPSOpcode op) override;
+	void Comp_Special3(MIPSOpcode op) override;
 
-	void Comp_FPU3op(u32 op);
-	void Comp_FPU2op(u32 op);
-	void Comp_mxc1(u32 op);
+	void Comp_FPU3op(MIPSOpcode op) override;
+	void Comp_FPU2op(MIPSOpcode op) override;
+	void Comp_mxc1(MIPSOpcode op) override;
 
-	void Comp_DoNothing(u32 op);
+	void Comp_DoNothing(MIPSOpcode op) override;
 
-	void Comp_SV(u32 op);
-	void Comp_SVQ(u32 op);
-	void Comp_VPFX(u32 op);
-	void Comp_VVectorInit(u32 op);
-	void Comp_VDot(u32 op);
-	void Comp_VecDo3(u32 op);
-	void Comp_VV2Op(u32 op);
-	void Comp_Mftv(u32 op);
-	void Comp_Vmtvc(u32 op);
-	void Comp_Vmmov(u32 op);
-	void Comp_VScl(u32 op);
-	void Comp_Vmmul(u32 op);
-	void Comp_Vmscl(u32 op);
-	void Comp_Vtfm(u32 op);
-	void Comp_VHdp(u32 op);
-	void Comp_VCrs(u32 op);
-	void Comp_VDet(u32 op);
-	void Comp_Vi2x(u32 op);
-	void Comp_Vx2i(u32 op);
-	void Comp_Vf2i(u32 op);
-	void Comp_Vi2f(u32 op);
-	void Comp_Vcst(u32 op);
-	void Comp_Vhoriz(u32 op);
+	void Comp_SV(MIPSOpcode op) override;
+	void Comp_SVQ(MIPSOpcode op) override;
+	void Comp_VPFX(MIPSOpcode op) override;
+	void Comp_VVectorInit(MIPSOpcode op) override;
+	void Comp_VMatrixInit(MIPSOpcode op) override;
+	void Comp_VDot(MIPSOpcode op) override;
+	void Comp_VecDo3(MIPSOpcode op) override;
+	void Comp_VV2Op(MIPSOpcode op) override;
+	void Comp_Mftv(MIPSOpcode op) override;
+	void Comp_Vmfvc(MIPSOpcode op) override;
+	void Comp_Vmtvc(MIPSOpcode op) override;
+	void Comp_Vmmov(MIPSOpcode op) override;
+	void Comp_VScl(MIPSOpcode op) override;
+	void Comp_Vmmul(MIPSOpcode op) override;
+	void Comp_Vmscl(MIPSOpcode op) override;
+	void Comp_Vtfm(MIPSOpcode op) override;
+	void Comp_VHdp(MIPSOpcode op) override;
+	void Comp_VCrs(MIPSOpcode op) override;
+	void Comp_VDet(MIPSOpcode op) override;
+	void Comp_Vi2x(MIPSOpcode op) override;
+	void Comp_Vx2i(MIPSOpcode op) override;
+	void Comp_Vf2i(MIPSOpcode op) override;
+	void Comp_Vi2f(MIPSOpcode op) override;
+	void Comp_Vh2f(MIPSOpcode op) override;
+	void Comp_Vcst(MIPSOpcode op) override;
+	void Comp_Vhoriz(MIPSOpcode op) override;
+	void Comp_VRot(MIPSOpcode op) override;
+	void Comp_VIdt(MIPSOpcode op) override;
+	void Comp_Vcmp(MIPSOpcode op) override;
+	void Comp_Vcmov(MIPSOpcode op) override;
+	void Comp_Viim(MIPSOpcode op) override;
+	void Comp_Vfim(MIPSOpcode op) override;
+	void Comp_VCrossQuat(MIPSOpcode op) override;
+	void Comp_Vsgn(MIPSOpcode op) override;
+	void Comp_Vocp(MIPSOpcode op) override;
+	void Comp_ColorConv(MIPSOpcode op) override;
+	void Comp_Vbfy(MIPSOpcode op) override;
 
-	JitBlockCache *GetBlockCache() { return &blocks; }
+	// Non-NEON: VPFX
 
-	void ClearCache();
-	void ClearCacheAt(u32 em_address);
+	// NEON implementations of the VFPU ops.
+	void CompNEON_SV(MIPSOpcode op);
+	void CompNEON_SVQ(MIPSOpcode op);
+	void CompNEON_VVectorInit(MIPSOpcode op);
+	void CompNEON_VMatrixInit(MIPSOpcode op);
+	void CompNEON_VDot(MIPSOpcode op);
+	void CompNEON_VecDo3(MIPSOpcode op);
+	void CompNEON_VV2Op(MIPSOpcode op);
+	void CompNEON_Mftv(MIPSOpcode op);
+	void CompNEON_Vmfvc(MIPSOpcode op);
+	void CompNEON_Vmtvc(MIPSOpcode op);
+	void CompNEON_Vmmov(MIPSOpcode op);
+	void CompNEON_VScl(MIPSOpcode op);
+	void CompNEON_Vmmul(MIPSOpcode op);
+	void CompNEON_Vmscl(MIPSOpcode op);
+	void CompNEON_Vtfm(MIPSOpcode op);
+	void CompNEON_VHdp(MIPSOpcode op);
+	void CompNEON_VCrs(MIPSOpcode op);
+	void CompNEON_VDet(MIPSOpcode op);
+	void CompNEON_Vi2x(MIPSOpcode op);
+	void CompNEON_Vx2i(MIPSOpcode op);
+	void CompNEON_Vf2i(MIPSOpcode op);
+	void CompNEON_Vi2f(MIPSOpcode op);
+	void CompNEON_Vh2f(MIPSOpcode op);
+	void CompNEON_Vcst(MIPSOpcode op);
+	void CompNEON_Vhoriz(MIPSOpcode op);
+	void CompNEON_VRot(MIPSOpcode op);
+	void CompNEON_VIdt(MIPSOpcode op);
+	void CompNEON_Vcmp(MIPSOpcode op);
+	void CompNEON_Vcmov(MIPSOpcode op);
+	void CompNEON_Viim(MIPSOpcode op);
+	void CompNEON_Vfim(MIPSOpcode op);
+	void CompNEON_VCrossQuat(MIPSOpcode op);
+	void CompNEON_Vsgn(MIPSOpcode op);
+	void CompNEON_Vocp(MIPSOpcode op);
+	void CompNEON_ColorConv(MIPSOpcode op);
+	void CompNEON_Vbfy(MIPSOpcode op);
 
-	// TODO: Eat VFPU prefixes here.
-	void EatPrefix() { }
+	int Replace_fabsf() override;
+
+	JitBlockCache *GetBlockCache() override { return &blocks; }
+
+	std::vector<u32> SaveAndClearEmuHackOps() override { return blocks.SaveAndClearEmuHackOps(); }
+	void RestoreSavedEmuHackOps(std::vector<u32> saved) override { blocks.RestoreSavedEmuHackOps(saved); }
+
+	void ClearCache() override;
+	void InvalidateCacheAt(u32 em_address, int length = 4) override;
+
+	void EatPrefix() override { js.EatPrefix(); }
+
+	const u8 *GetDispatcher() const override {
+		return dispatcher;
+	}
+
+	void LinkBlock(u8 *exitPoint, const u8 *checkedEntry) override;
+	void UnlinkBlock(u8 *checkedEntry, u32 originalAddress) override;
 
 private:
+	const u8 *DoJit(u32 em_address, JitBlock *b);
+
 	void GenerateFixedCode();
 	void FlushAll();
 	void FlushPrefixV();
 
+	u32 GetCompilerPC();
+	void CompileDelaySlot(int flags);
+	void EatInstruction(MIPSOpcode op);
+	void AddContinuedBlock(u32 dest);
+	MIPSOpcode GetOffsetInstruction(int offset);
+
 	void WriteDownCount(int offset = 0);
-	void MovFromPC(ARMReg r);
-	void MovToPC(ARMReg r);
+	void WriteDownCountR(ArmGen::ARMReg reg);
+	void RestoreRoundingMode(bool force = false);
+	void ApplyRoundingMode(bool force = false);
+	void UpdateRoundingMode();
+	void MovFromPC(ArmGen::ARMReg r);
+	void MovToPC(ArmGen::ARMReg r);
+
+	bool ReplaceJalTo(u32 dest);
+
+	void SaveDowncount();
+	void RestoreDowncount();
 
 	void WriteExit(u32 destination, int exit_num);
-	void WriteExitDestInR(ARMReg Reg);
+	void WriteExitDestInR(ArmGen::ARMReg Reg);
 	void WriteSyscallExit();
 
 	// Utility compilation functions
-	void BranchFPFlag(u32 op, ArmGen::CCFlags cc, bool likely);
-	void BranchVFPUFlag(u32 op, ArmGen::CCFlags cc, bool likely);
-	void BranchRSZeroComp(u32 op, ArmGen::CCFlags cc, bool andLink, bool likely);
-	void BranchRSRTComp(u32 op, ArmGen::CCFlags cc, bool likely);
+	void BranchFPFlag(MIPSOpcode op, CCFlags cc, bool likely);
+	void BranchVFPUFlag(MIPSOpcode op, CCFlags cc, bool likely);
+	void BranchRSZeroComp(MIPSOpcode op, CCFlags cc, bool andLink, bool likely);
+	void BranchRSRTComp(MIPSOpcode op, CCFlags cc, bool likely);
 
 	// Utilities to reduce duplicated code
-	void CompImmLogic(int rs, int rt, u32 uimm, void (ARMXEmitter::*arith)(ARMReg dst, ARMReg src, Operand2 op2), u32 (*eval)(u32 a, u32 b));
-	void CompType3(int rd, int rs, int rt, void (ARMXEmitter::*arithOp2)(ARMReg dst, ARMReg rm, Operand2 rn), u32 (*eval)(u32 a, u32 b), bool isSub = false);
+	void CompImmLogic(MIPSGPReg rs, MIPSGPReg rt, u32 uimm, void (ARMXEmitter::*arith)(ArmGen::ARMReg dst, ArmGen::ARMReg src, ArmGen::Operand2 op2), bool (ARMXEmitter::*tryArithI2R)(ArmGen::ARMReg dst, ArmGen::ARMReg src, u32 val), u32 (*eval)(u32 a, u32 b));
+	void CompType3(MIPSGPReg rd, MIPSGPReg rs, MIPSGPReg rt, void (ARMXEmitter::*arithOp2)(ArmGen::ARMReg dst, ArmGen::ARMReg rm, ArmGen::Operand2 rn), bool (ARMXEmitter::*tryArithI2R)(ArmGen::ARMReg dst, ArmGen::ARMReg rm, u32 val), u32 (*eval)(u32 a, u32 b), bool symmetric = false);
 
-	void CompShiftImm(u32 op, ArmGen::ShiftType shiftType);
-	void CompShiftVar(u32 op, ArmGen::ShiftType shiftType);
+	void CompShiftImm(MIPSOpcode op, ArmGen::ShiftType shiftType, int sa);
+	void CompShiftVar(MIPSOpcode op, ArmGen::ShiftType shiftType);
+	void CompVrotShuffle(u8 *dregs, int imm, VectorSize sz, bool negSin);
 
 	void ApplyPrefixST(u8 *vregs, u32 prefix, VectorSize sz);
 	void ApplyPrefixD(const u8 *vregs, VectorSize sz);
 	void GetVectorRegsPrefixS(u8 *regs, VectorSize sz, int vectorReg) {
-		_assert_(js.prefixSFlag & ArmJitState::PREFIX_KNOWN);
+		_assert_(js.prefixSFlag & JitState::PREFIX_KNOWN);
 		GetVectorRegs(regs, sz, vectorReg);
 		ApplyPrefixST(regs, js.prefixS, sz);
 	}
 	void GetVectorRegsPrefixT(u8 *regs, VectorSize sz, int vectorReg) {
-		_assert_(js.prefixTFlag & ArmJitState::PREFIX_KNOWN);
+		_assert_(js.prefixTFlag & JitState::PREFIX_KNOWN);
 		GetVectorRegs(regs, sz, vectorReg);
 		ApplyPrefixST(regs, js.prefixT, sz);
 	}
 	void GetVectorRegsPrefixD(u8 *regs, VectorSize sz, int vectorReg);
 
+
+	// For NEON mappings, it will be easier to deal directly in ARM registers.
+
+	ArmGen::ARMReg NEONMapPrefixST(int vfpuReg, VectorSize sz, u32 prefix, int mapFlags);
+	ArmGen::ARMReg NEONMapPrefixS(int vfpuReg, VectorSize sz, int mapFlags) {
+		return NEONMapPrefixST(vfpuReg, sz, js.prefixS, mapFlags);
+	}
+	ArmGen::ARMReg NEONMapPrefixT(int vfpuReg, VectorSize sz, int mapFlags) {
+		return NEONMapPrefixST(vfpuReg, sz, js.prefixT, mapFlags);
+	}
+
+	struct DestARMReg {
+		ArmGen::ARMReg rd;
+		ArmGen::ARMReg backingRd;
+		VectorSize sz;
+
+		operator ArmGen::ARMReg() const { return rd; }
+	};
+
+	struct MappedRegs {
+		ArmGen::ARMReg vs;
+		ArmGen::ARMReg vt;
+		DestARMReg vd;
+		bool overlap;
+	};
+
+	MappedRegs NEONMapDirtyInIn(MIPSOpcode op, VectorSize dsize, VectorSize ssize, VectorSize tsize, bool applyPrefixes = true);
+	MappedRegs NEONMapInIn(MIPSOpcode op, VectorSize ssize, VectorSize tsize, bool applyPrefixes = true);
+	MappedRegs NEONMapDirtyIn(MIPSOpcode op, VectorSize dsize, VectorSize ssize, bool applyPrefixes = true);
+
+	DestARMReg NEONMapPrefixD(int vfpuReg, VectorSize sz, int mapFlags);
+	void NEONApplyPrefixD(DestARMReg dest);
+
+	// NEON utils
+	void NEONMaskToSize(ArmGen::ARMReg vs, VectorSize sz);
+	void NEONTranspose4x4(ArmGen::ARMReg cols[4]);
+
 	// Utils
-	void SetR0ToEffectiveAddress(int rs, s16 offset);
-	void SetCCAndR0ForSafeAddress(int rs, s16 offset, ARMReg tempReg);
+	void SetR0ToEffectiveAddress(MIPSGPReg rs, s16 offset);
+	void SetCCAndR0ForSafeAddress(MIPSGPReg rs, s16 offset, ArmGen::ARMReg tempReg, bool reverse = false);
+	void Comp_ITypeMemLR(MIPSOpcode op, bool load);
 
 	JitBlockCache blocks;
-	ArmJitOptions jo;
-	ArmJitState js;
+	JitOptions jo;
+	JitState js;
 
 	ArmRegCache gpr;
 	ArmRegCacheFPU fpr;
 
 	MIPSState *mips_;
 
+	int dontLogBlocks;
+	int logBlocks;
+
 public:
 	// Code pointers
-	const u8 *enterCode;
+	const u8 *enterDispatcher;
 
 	const u8 *outerLoop;
 	const u8 *outerLoopPCInR0;
@@ -279,10 +308,12 @@ public:
 	const u8 *dispatcher;
 	const u8 *dispatcherNoCheck;
 
+	const u8 *restoreRoundingMode;
+	const u8 *applyRoundingMode;
+	const u8 *updateRoundingMode;
+
 	const u8 *breakpointBailout;
 };
-
-typedef void (Jit::*MIPSCompileFunc)(u32 opcode);
 
 }	// namespace MIPSComp
 
